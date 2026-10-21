@@ -134,9 +134,13 @@ export default class TuyaDevice {
     return this.id.startsWith('vdevo');
   }
 
+  // The category before a `deviceOverrides` category was applied.
+  original_category?: string;
+
   isIRControlHub() {
-    return ['wnykq', 'hwktwkq', 'wsdykq']
-      .includes(this.category);
+    // A hub that is hidden through `deviceOverrides` still has to be used to reach its remotes.
+    return [this.category, this.original_category]
+      .some(category => category !== undefined && ['wnykq', 'hwktwkq', 'wsdykq'].includes(category));
   }
 
   isIRRemoteControl() {

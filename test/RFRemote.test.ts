@@ -69,6 +69,17 @@ describe('RF remotes on an IR+RF hub', () => {
     expect(devices[2].remote_keys).toBeUndefined(); // not an RF remote, left alone
   });
 
+  test('a hub hidden through a category override is still used to reach its remotes', async () => {
+    const { manager } = makeManager(responses);
+    const devices = makeDevices();
+    devices[0].original_category = devices[0].category;
+    devices[0].category = 'hidden';
+    await manager.updateInfraredRemotes(devices);
+
+    expect(devices[1].parent_id).toBe(HUB);
+    expect(devices[1].remote_keys?.key_list).toHaveLength(3);
+  });
+
   test('RF keys are issued to the hub as its ir_send property, the code is the whole payload', async () => {
     const { manager, post } = makeManager(responses);
     const devices = makeDevices();
