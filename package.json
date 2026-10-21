@@ -29,6 +29,7 @@
     "watch": "npm run build && npm link && nodemon",
     "launch": "tsc && homebridge -I -D",
     "build": "rimraf ./dist && tsc",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run lint && npm run build"
   },
   "keywords": [
