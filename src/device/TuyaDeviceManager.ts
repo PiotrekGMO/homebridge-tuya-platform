@@ -5,6 +5,7 @@ import { TuyaLocalClientFactory } from '../core/TuyaLocal';
 import { TuyaPlatformLocalDeviceConfig } from '../config';
 import Logger, { PrefixLogger } from '../util/Logger';
 import TuyaLocalLink from './TuyaLocalLink';
+import { parseThingModel } from './ThingModel';
 import TuyaDevice, {
   TuyaDeviceSchema,
   TuyaDeviceSchemaMode,
@@ -144,7 +145,7 @@ export default class TuyaDeviceManager extends EventEmitter {
     }
 
     const device = new TuyaDevice(res.result);
-    device.schema = await this.getDeviceSchema(deviceID);
+    await this.loadDeviceSchema(device);
 
     const oldDevice = this.getDevice(deviceID);
     if (oldDevice) {
@@ -237,6 +238,54 @@ export default class TuyaDeviceManager extends EventEmitter {
     if (missing.length > 0) {
       this.log.debug('No dp_id for %o of devId = %s, those stay cloud-only.', missing, deviceID);
     }
+  }
+
+  /** Standard specification first, Things Data Model for products without a standard instruction set. */
+  async loadDeviceSchema(device: TuyaDevice) {
+    device.schema = await this.getDeviceSchema(device.id);
+    if (device.schema.length === 0 && !device.sub && !device.isIRControlHub()) {
+      await this.loadThingModel(device);
+    }
+  }
+
+  async loadThingModel(device: TuyaDevice) {
+    const res = await this.api.get(`/v2.0/cloud/thing/${device.id}/model`);
+    if (res.success === false) {
+      this.log.warn('Get thing model failed. devId = %s, code = %s, msg = %s', device.id, res.code, res.msg);
+      return;
+    }
+
+    let schema: TuyaDeviceSchema[];
+    try {
+      schema = parseThingModel(res.result);
+    } catch (error) {
+      this.log.warn('Parse thing model failed. devId = %s, error = %s', device.id, (error as Error)?.message);
+      return;
+    }
+    if (schema.length === 0) {
+      this.log.warn('Thing model of devId = %s has no usable properties.', device.id);
+      return;
+    }
+    device.schema = schema;
+
+    const shadow = await this.api.get(`/v2.0/cloud/thing/${device.id}/shadow/properties`);
+    if (shadow.success === false) {
+      this.log.warn('Get thing properties failed. devId = %s, code = %s, msg = %s', device.id, shadow.code, shadow.msg);
+    }
+    const known = new Set(device.status.map(item => item.code));
+    for (const { code, value } of (shadow.result?.properties ?? []) as Array<{ code: string; value: unknown }>) {
+      if (value !== undefined && !known.has(code) && schema.some(item => item.code === code)) {
+        device.status.push({ code, value } as TuyaDeviceStatus);
+      }
+    }
+    device.status.sort((a, b) => a.code > b.code ? 1 : -1);
+
+    // Shown so `deviceOverrides` (category, code -> newCode) can be written for such a device.
+    this.log.info(
+      '%s (category %s, product %s) has no standard specification, using its thing model: %s',
+      device.name, device.category, device.product_id,
+      schema.map(item => `${item.code}(dp ${item.dp_id}, ${item.type}, ${item.mode})`).join(', '),
+    );
   }
 
   async getInfraredRemotes(infraredID: string) {
