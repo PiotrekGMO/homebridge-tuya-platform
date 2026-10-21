@@ -35,6 +35,12 @@
                                 "enum": [
                                     "2"
                                 ]
+                            },
+                            {
+                                "title": "Local only (no Tuya cloud, needs a snapshot or Local Devices)",
+                                "enum": [
+                                    "3"
+                                ]
                             }
                         ],
                         "required": true
@@ -42,17 +48,141 @@
                     "endpoint": {
                         "title": "Endpoint URL",
                         "type": "string",
-                        "format": "url"
+                        "format": "url",
+                        "condition": {
+                            "functionBody": "return model.options.projectType !== '3';"
+                        }
                     },
                     "accessId": {
                         "title": "Access ID",
                         "type": "string",
-                        "required": true
+                        "condition": {
+                            "functionBody": "return model.options.projectType !== '3';"
+                        }
                     },
                     "accessKey": {
                         "title": "Access Secret",
                         "type": "string",
-                        "required": true
+                        "condition": {
+                            "functionBody": "return model.options.projectType !== '3';"
+                        }
+                    },
+                    "local": {
+                        "title": "Local (LAN) Control",
+                        "type": "object",
+                        "properties": {
+                            "enabled": {
+                                "title": "Control devices over LAN",
+                                "description": "Commands and status go over the local network (TCP 6668). The Tuya cloud is only used for the device list and as a fallback. A snapshot (local keys, data point ids) is kept so the plugin keeps working when the cloud is gone.",
+                                "type": "boolean",
+                                "default": false
+                            },
+                            "exclude": {
+                                "title": "Cloud-only devices",
+                                "description": "Device IDs or Product IDs that must not use LAN control, e.g. battery powered sensors.",
+                                "type": "array",
+                                "items": {
+                                    "title": "Device ID or Product ID",
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "localDevices": {
+                        "title": "Local Devices",
+                        "description": "Add or complete devices by hand, without the cloud: local key, IP and the data point (DP) map.",
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "title": "Device ID",
+                                    "type": "string",
+                                    "required": true
+                                },
+                                "name": {
+                                    "title": "Name",
+                                    "type": "string"
+                                },
+                                "key": {
+                                    "title": "Local Key",
+                                    "description": "Leave empty to use the key from the cloud/snapshot.",
+                                    "type": "string"
+                                },
+                                "ip": {
+                                    "title": "IP Address",
+                                    "description": "Leave empty to discover it on the network.",
+                                    "type": "string"
+                                },
+                                "version": {
+                                    "title": "Protocol Version",
+                                    "description": "Leave empty to detect it.",
+                                    "type": "string",
+                                    "oneOf": [
+                                        { "title": "3.1", "enum": ["3.1"] },
+                                        { "title": "3.3", "enum": ["3.3"] },
+                                        { "title": "3.4", "enum": ["3.4"] },
+                                        { "title": "3.5", "enum": ["3.5"] }
+                                    ]
+                                },
+                                "category": {
+                                    "title": "Category",
+                                    "description": "Tuya category code, e.g. cz, dj, wsdcg, kg.",
+                                    "type": "string"
+                                },
+                                "product_id": {
+                                    "title": "Product ID",
+                                    "type": "string"
+                                },
+                                "schema": {
+                                    "title": "Data Points",
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "code": {
+                                                "title": "DP Code",
+                                                "description": "Tuya standard code, e.g. switch_1, va_temperature.",
+                                                "type": "string",
+                                                "required": true
+                                            },
+                                            "dp_id": {
+                                                "title": "DP ID",
+                                                "type": "integer",
+                                                "required": true
+                                            },
+                                            "type": {
+                                                "title": "Type",
+                                                "type": "string",
+                                                "default": "Boolean",
+                                                "oneOf": [
+                                                    { "title": "Boolean", "enum": ["Boolean"] },
+                                                    { "title": "Integer", "enum": ["Integer"] },
+                                                    { "title": "Enum", "enum": ["Enum"] },
+                                                    { "title": "String", "enum": ["String"] },
+                                                    { "title": "Json", "enum": ["Json"] }
+                                                ]
+                                            },
+                                            "mode": {
+                                                "title": "Mode",
+                                                "type": "string",
+                                                "default": "rw",
+                                                "oneOf": [
+                                                    { "title": "Read / Write", "enum": ["rw"] },
+                                                    { "title": "Read only", "enum": ["ro"] },
+                                                    { "title": "Write only", "enum": ["wo"] }
+                                                ]
+                                            },
+                                            "property": {
+                                                "title": "Property",
+                                                "description": "JSON, e.g. {\"min\":0,\"max\":100,\"scale\":0,\"step\":1} for Integer or {\"range\":[\"a\",\"b\"]} for Enum.",
+                                                "type": "object"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     },
                     "countryCode": {
                         "title": "Country Code",

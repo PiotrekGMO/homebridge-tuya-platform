@@ -7,9 +7,12 @@ import TuyaDevice, { TuyaDeviceStatus } from './device/TuyaDevice';
 import TuyaDeviceManager from './device/TuyaDeviceManager';
 import TuyaCustomDeviceManager from './device/TuyaCustomDeviceManager';
 import TuyaHomeDeviceManager from './device/TuyaHomeDeviceManager';
+import TuyaLocalDeviceManager from './device/TuyaLocalDeviceManager';
+import { isLocalCapable, loadSnapshot, saveSnapshot, snapshotPath } from './device/TuyaLocalSnapshot';
+import { debounce } from 'debounce';
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
-import { TuyaPlatformConfigOptions, customOptionsSchema, homeOptionsSchema } from './config';
+import { TuyaPlatformConfigOptions, customOptionsSchema, homeOptionsSchema, localOptionsSchema } from './config';
 import AccessoryFactory from './accessory/AccessoryFactory';
 import BaseAccessory from './accessory/BaseAccessory';
 import TuyaOpenAPI, { LOGIN_ERROR_MESSAGES } from './core/TuyaOpenAPI';
@@ -41,6 +44,8 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
       result = new Validator().validate(this.options, customOptionsSchema);
     } else if (this.options.projectType === '2') {
       result = new Validator().validate(this.options, homeOptionsSchema);
+    } else if (this.options.projectType === '3') {
+      result = new Validator().validate(this.options, localOptionsSchema);
     } else {
       this.log.error(`Unsupported projectType: ${this.options['projectType']}, exit.`);
       return false;
@@ -151,12 +156,30 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
   async initDevices() {
 
     let devices: TuyaDevice[] | undefined;
-    if (this.options.projectType === '1') {
-      devices = await this.initCustomProject();
-    } else if (this.options.projectType === '2') {
-      devices = await this.initHomeProject();
-    } else {
-      this.log.warn(`Unsupported projectType: ${this.config.options.projectType}.`);
+    const localEnabled = this.options.projectType === '3' || this.options.local?.enabled === true;
+    try {
+      if (this.options.projectType === '1') {
+        devices = await this.initCustomProject();
+      } else if (this.options.projectType === '2') {
+        devices = await this.initHomeProject();
+      } else if (this.options.projectType === '3') {
+        devices = await this.initLocalProject();
+      } else {
+        this.log.warn(`Unsupported projectType: ${this.config.options.projectType}.`);
+      }
+    } catch (error) {
+      if (!localEnabled) {
+        throw error;
+      }
+      this.log.error('Tuya cloud failed: %s', (error as Error)?.message ?? error);
+      this.deviceManager?.mq.stop();
+      this.deviceManager = undefined;
+      devices = undefined;
+    }
+
+    if ((!devices || !this.deviceManager) && localEnabled && this.options.projectType !== '3') {
+      this.log.warn('Tuya cloud is not available, falling back to the local snapshot.');
+      devices = await this.initLocalProject();
     }
 
     if (!devices || !this.deviceManager) {
@@ -186,12 +209,18 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
     await this.deviceManager.updateInfraredRemotes(devices);
 
     this.log.info(`Got ${devices.length} device(s) and scene(s).`);
-    const file = path.join(this.api.user.persistPath(), `TuyaDeviceList.${this.deviceManager.api.tokenInfo.uid}.json`);
-    this.log.info('Device list saved at %s', file);
-    if (!fs.existsSync(this.api.user.persistPath())) {
-      await fs.promises.mkdir(this.api.user.persistPath());
+    if (this.deviceManager.cloud) {
+      const file = path.join(this.api.user.persistPath(), `TuyaDeviceList.${this.deviceManager.api.tokenInfo.uid}.json`);
+      this.log.info('Device list saved at %s', file);
+      if (!fs.existsSync(this.api.user.persistPath())) {
+        await fs.promises.mkdir(this.api.user.persistPath());
+      }
+      await fs.promises.writeFile(file, JSON.stringify(devices, null, 2));
+
+      if (localEnabled) {
+        await this.saveLocalSnapshot();
+      }
     }
-    await fs.promises.writeFile(file, JSON.stringify(devices, null, 2));
 
     // add accessories
     for (const device of devices) {
@@ -210,6 +239,48 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
     this.deviceManager!.on(TuyaDeviceManager.Events.DEVICE_STATUS_UPDATE, this.updateAccessoryStatus.bind(this));
     this.deviceManager!.on(TuyaDeviceManager.Events.DEVICE_DELETE, this.removeAccessory.bind(this));
 
+    if (localEnabled) {
+      this.deviceManager!.on(TuyaDeviceManager.Events.DEVICE_LOCAL_UPDATE, () => this.saveLocalSnapshotSoon());
+      this.deviceManager!.enableLocal(devices, {
+        exclude: this.options.local?.exclude,
+        localDevices: this.options.localDevices,
+      });
+    }
+
+  }
+
+  getSnapshotFile() {
+    return snapshotPath(this.api.user.persistPath());
+  }
+
+  async saveLocalSnapshot() {
+    try {
+      await saveSnapshot(this.getSnapshotFile(), this.deviceManager?.devices ?? []);
+    } catch (error) {
+      this.log.warn('Saving local snapshot failed: %s', (error as Error)?.message ?? error);
+    }
+  }
+
+  saveLocalSnapshotSoon = debounce(() => this.saveLocalSnapshot(), 5000);
+
+  /** Runs without the Tuya cloud: devices come from the snapshot of the last cloud sync and `localDevices`. */
+  async initLocalProject() {
+    const snapshot = (await loadSnapshot(this.getSnapshotFile())).filter(isLocalCapable);
+    const localDevices = this.options.localDevices ?? [];
+    if (snapshot.length === 0 && localDevices.length === 0) {
+      this.log.error('No local snapshot and no "localDevices" configured, nothing to run. ' +
+        'Start the plugin once while the Tuya cloud works to create the snapshot.');
+      return undefined;
+    }
+
+    const debugMode = this.options.debug && ((this.options.debugLevel ?? '').length > 0
+      ? this.options.debugLevel?.includes('api') : true);
+    const deviceManager = new TuyaLocalDeviceManager(this.log, debugMode);
+    const devices = await deviceManager.updateDevices(snapshot, localDevices);
+    this.log.info('Local mode: %d device(s) from snapshot and config.', devices.length);
+
+    this.deviceManager = deviceManager;
+    return devices;
   }
 
   getDeviceConfig(device: TuyaDevice) {

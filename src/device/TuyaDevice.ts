@@ -39,6 +39,7 @@ export type TuyaDeviceSchemaProperty = TuyaDeviceSchemaIntegerProperty
 export type TuyaDeviceSchema = {
   code: string;
   // name: string;
+  dp_id?: number; // data point id used by the local (LAN) protocol
   mode: TuyaDeviceSchemaMode;
   type: TuyaDeviceSchemaType;
   property: TuyaDeviceSchemaProperty;
@@ -103,6 +104,10 @@ export default class TuyaDevice {
 
   // status
   status!: TuyaDeviceStatus[];
+
+  // local (LAN) control
+  local_key?: string;
+  local?: { ip?: string; version?: string };
 
   // location
   ip!: string;

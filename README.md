@@ -104,6 +104,27 @@ Before you can configure, you must go to the [Tuya IoT Platform](https://iot.tuy
 #### Advanced options
 See [ADVANCED_OPTIONS.md](./ADVANCED_OPTIONS.md)
 
+#### Local (LAN) control — fork feature
+Design notes: [DESIGN-LOCAL.md](./DESIGN-LOCAL.md).
+
+- `options.local.enabled` - **optional**: Send commands and receive status over the local network (TCP 6668). The cloud is used for the device list and as a fallback. Every successful cloud sync writes `persist/TuyaLocalSnapshot.json` (local keys, data point ids, last status), so the plugin keeps working if the cloud project expires. If the cloud login fails, the plugin starts from this snapshot. (Default: `false`)
+- `options.local.exclude` - **optional**: Device IDs / Product IDs that stay cloud-only (battery devices do not listen on the LAN).
+- `options.projectType: "3"` - **optional**: Run without any cloud credentials, from the snapshot and/or `options.localDevices`.
+- `options.localDevices` - **optional**: Add or complete devices by hand, e.g. devices the cloud reports as unsupported. Each entry has `id`, `key` (local key), `ip`, `version` (3.1/3.3/3.4/3.5, detected when empty), `category` and `schema` (`code` ↔ `dp_id`, `type`, `mode`, `property`). `deviceOverrides` still apply on top.
+
+```json
+"localDevices": [{
+  "id": "bf1234567890abcdef", "name": "Garage thermometer", "key": "0123456789abcdef", "ip": "192.168.1.50",
+  "category": "wsdcg",
+  "schema": [
+    { "code": "va_temperature", "dp_id": 1, "type": "Integer", "mode": "ro", "property": { "min": -400, "max": 1000, "scale": 1, "step": 1, "unit": "C" } },
+    { "code": "va_humidity", "dp_id": 2, "type": "Integer", "mode": "ro", "property": { "min": 0, "max": 100, "scale": 0, "step": 1, "unit": "%" } }
+  ]
+}]
+```
+
+Notes: a Tuya device accepts one LAN connection at a time, UDP discovery only works when the Homebridge host can receive broadcasts (use `ip` otherwise), and the snapshot contains secrets, keep it private.
+
 
 ## Limitations
 - **⚠️Don't forget to extend the API trial period every 6 months. Maybe you can set up a reminder in calendar.**

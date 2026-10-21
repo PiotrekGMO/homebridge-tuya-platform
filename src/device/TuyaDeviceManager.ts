@@ -1,7 +1,10 @@
 import EventEmitter from 'events';
 import TuyaOpenAPI from '../core/TuyaOpenAPI';
 import TuyaOpenMQ from '../core/TuyaOpenMQ';
+import { TuyaLocalClientFactory } from '../core/TuyaLocal';
+import { TuyaPlatformLocalDeviceConfig } from '../config';
 import Logger, { PrefixLogger } from '../util/Logger';
+import TuyaLocalLink from './TuyaLocalLink';
 import TuyaDevice, {
   TuyaDeviceSchema,
   TuyaDeviceSchemaMode,
@@ -14,6 +17,7 @@ enum Events {
   DEVICE_INFO_UPDATE = 'DEVICE_INFO_UPDATE',
   DEVICE_STATUS_UPDATE = 'DEVICE_STATUS_UPDATE',
   DEVICE_DELETE = 'DEVICE_DELETE',
+  DEVICE_LOCAL_UPDATE = 'DEVICE_LOCAL_UPDATE', // local ip / protocol version learned
 }
 
 enum TuyaMQTTProtocol {
@@ -30,6 +34,10 @@ export default class TuyaDeviceManager extends EventEmitter {
   public devices: TuyaDevice[] = [];
   public log: Logger;
 
+  // false when running without the Tuya cloud (local-only mode)
+  public cloud = true;
+  public local?: TuyaLocalLink;
+
   constructor(
     public api: TuyaOpenAPI,
     public debug = false,
@@ -41,6 +49,82 @@ export default class TuyaDeviceManager extends EventEmitter {
 
     this.mq = new TuyaOpenMQ(api, log);
     this.mq.addMessageListener(this.onMQTTMessage.bind(this));
+  }
+
+  /**
+   * Start LAN control for devices that have a local key (from the cloud, the snapshot or `localDevices`).
+   * Commands then go over LAN first and status is pushed by the device itself.
+   */
+  enableLocal(
+    devices: TuyaDevice[],
+    options: { exclude?: string[]; localDevices?: TuyaPlatformLocalDeviceConfig[] } = {},
+    clientFactory?: TuyaLocalClientFactory,
+  ) {
+    const link = this.local ?? new TuyaLocalLink(this.log, clientFactory);
+    if (!this.local) {
+      this.local = link;
+      link.on('status', (deviceID: string, status: TuyaDeviceStatus[]) => this.applyStatusUpdate(deviceID, status));
+      link.on('online', (deviceID: string, online: boolean) => this.onLocalOnline(deviceID, online));
+      link.on('version', (deviceID: string, version: string) => this.onLocalInfo(deviceID, { version }));
+      link.on('ip', (deviceID: string, ip: string) => this.onLocalInfo(deviceID, { ip }));
+    }
+
+    for (const device of devices) {
+      const config = options.localDevices?.find(item => item.id === device.id);
+      const excluded = (options.exclude ?? []).some(id => id === device.id || id === device.product_id);
+      const key = config?.key ?? device.local_key;
+      if (excluded || !key || device.sub || device.parent_id || device.category === 'scene') {
+        continue;
+      }
+
+      const ip = config?.ip ?? device.local?.ip;
+      const version = config?.version ?? device.local?.version;
+      link.register(device, { key, ip, version });
+      this.log.info('Local control enabled for %s (%s)', device.name, ip ?? 'auto-discover');
+    }
+
+    link.start();
+  }
+
+  onLocalOnline(deviceID: string, online: boolean) {
+    const device = this.getDevice(deviceID);
+    if (!device) {
+      return;
+    }
+    this.log.debug('Local connection %s: %s', online ? 'up' : 'down', device.name);
+
+    // With the cloud present, its online flag stays authoritative.
+    if (this.cloud || device.online === online) {
+      return;
+    }
+    device.online = online;
+    this.emit(Events.DEVICE_INFO_UPDATE, device, { bizCode: online ? 'online' : 'offline' });
+  }
+
+  onLocalInfo(deviceID: string, info: { ip?: string; version?: string }) {
+    const device = this.getDevice(deviceID);
+    if (!device) {
+      return;
+    }
+    device.local = { ...device.local, ...info };
+    this.emit(Events.DEVICE_LOCAL_UPDATE, device);
+  }
+
+  applyStatusUpdate(deviceID: string, status: TuyaDeviceStatus[]) {
+    const device = this.getDevice(deviceID);
+    if (!device) {
+      return;
+    }
+
+    for (const item of device.status) {
+      const _item = status.find(_item => _item.code === item.code);
+      if (!_item) {
+        continue;
+      }
+      item.value = _item.value;
+    }
+
+    this.emit(Events.DEVICE_STATUS_UPDATE, device, status);
   }
 
   getDevice(deviceID: string) {
@@ -92,7 +176,7 @@ export default class TuyaDeviceManager extends EventEmitter {
 
     // Combine functions and status together, as it used to be.
     const schemas = new Map<string, TuyaDeviceSchema>();
-    for (const { code, type, values } of [...res.result.status, ...res.result.functions]) {
+    for (const { code, type, values, dp_id } of [...res.result.status, ...res.result.functions]) {
       if (schemas[code]) {
         continue;
       }
@@ -111,12 +195,48 @@ export default class TuyaDeviceManager extends EventEmitter {
       try {
         property = JSON.parse(values);
         schemas[code] = { code, mode, type, property };
+        if (typeof dp_id === 'number') {
+          schemas[code].dp_id = dp_id;
+        }
       } catch (error) {
         // ignore infrared remote's invalid schema because it's not used.
       }
     }
 
-    return Object.values(schemas).sort((a, b) => a.code > b.code ? 1 : -1) as TuyaDeviceSchema[];
+    const result = Object.values(schemas).sort((a, b) => a.code > b.code ? 1 : -1) as TuyaDeviceSchema[];
+    await this.fillDpIds(deviceID, result);
+    return result;
+  }
+
+  /**
+   * The local (LAN) protocol addresses data points by id, the cloud model by code.
+   * Fill in `dp_id` from the Things Data Model when the specification did not carry it.
+   */
+  async fillDpIds(deviceID: string, schemas: TuyaDeviceSchema[]) {
+    if (schemas.length === 0 || schemas.every(schema => schema.dp_id !== undefined)) {
+      return;
+    }
+
+    try {
+      const res = await this.api.get(`/v2.0/cloud/thing/${deviceID}/shadow/properties`);
+      if (res.success === false) {
+        this.log.debug('Get dp ids failed. devId = %s, code = %s, msg = %s', deviceID, res.code, res.msg);
+        return;
+      }
+      for (const { code, dp_id } of (res.result?.properties ?? []) as Array<{ code: string; dp_id: number }>) {
+        const schema = schemas.find(item => item.code === code);
+        if (schema && typeof dp_id === 'number') {
+          schema.dp_id = dp_id;
+        }
+      }
+    } catch (error) {
+      this.log.debug('Get dp ids failed. devId = %s, error = %s', deviceID, (error as Error)?.message);
+    }
+
+    const missing = schemas.filter(schema => schema.dp_id === undefined).map(schema => schema.code);
+    if (missing.length > 0) {
+      this.log.debug('No dp_id for %o of devId = %s, those stay cloud-only.', missing, deviceID);
+    }
   }
 
   async getInfraredRemotes(infraredID: string) {
@@ -232,6 +352,15 @@ export default class TuyaDeviceManager extends EventEmitter {
 
 
   async sendCommands(deviceID: string, commands: TuyaDeviceStatus[]) {
+    const device = this.getDevice(deviceID);
+    if (this.local && device && this.local.has(deviceID) && await this.local.send(device, commands)) {
+      return true;
+    }
+
+    if (!this.cloud) {
+      throw new Error(`Cannot reach ${device?.name ?? deviceID} over LAN and the Tuya cloud is not used.`);
+    }
+
     const res = await this.api.post(`/v1.0/devices/${deviceID}/commands`, { commands });
     return res.result;
   }
@@ -241,20 +370,7 @@ export default class TuyaDeviceManager extends EventEmitter {
     switch(protocol) {
       case TuyaMQTTProtocol.DEVICE_STATUS_UPDATE: {
         const { devId, status } = message;
-        const device = this.getDevice(devId);
-        if (!device) {
-          return;
-        }
-
-        for (const item of device.status) {
-          const _item = status.find(_item => _item.code === item.code);
-          if (!_item) {
-            continue;
-          }
-          item.value = _item.value;
-        }
-
-        this.emit(Events.DEVICE_STATUS_UPDATE, device, status);
+        this.applyStatusUpdate(devId, status);
         break;
       }
       case TuyaMQTTProtocol.DEVICE_INFO_UPDATE: {
