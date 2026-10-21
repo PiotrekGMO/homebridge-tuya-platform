@@ -3,7 +3,7 @@ import { describe, expect, test, jest } from '@jest/globals';
 import TuyaOpenAPI from '../src/core/TuyaOpenAPI';
 import TuyaDevice from '../src/device/TuyaDevice';
 import TuyaHomeDeviceManager from '../src/device/TuyaHomeDeviceManager';
-import IRWindowCoveringAccessory from '../src/accessory/IRWindowCoveringAccessory';
+import IRBlindsAccessory from '../src/accessory/IRBlindsAccessory';
 
 const log = { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() } as any;
 
@@ -109,19 +109,19 @@ describe('RF remotes on an IR+RF hub', () => {
     expect(res.success).toBe(false);
   });
 
-  test('blinds with open/close keys get the window covering accessory, other RF remotes do not', async () => {
+  test('blinds with open/close keys get the blinds accessory, other RF remotes do not', async () => {
     const { manager } = makeManager(responses);
     const devices = makeDevices();
     await manager.updateInfraredRemotes(devices);
-    expect(IRWindowCoveringAccessory.supports(devices[1])).toBe(true);
+    expect(IRBlindsAccessory.supports(devices[1])).toBe(true);
 
     const socket = new TuyaDevice({ ...devices[1], remote_keys: { ...devices[1].remote_keys!, category_id: 12 } } as any);
-    expect(IRWindowCoveringAccessory.supports(socket)).toBe(false);
+    expect(IRBlindsAccessory.supports(socket)).toBe(false);
 
     const noClose = new TuyaDevice({
       ...devices[1],
       remote_keys: { ...devices[1].remote_keys!, key_list: devices[1].remote_keys!.key_list.filter(key => key.key !== 'power_off') },
     } as any);
-    expect(IRWindowCoveringAccessory.supports(noClose)).toBe(false);
+    expect(IRBlindsAccessory.supports(noClose)).toBe(false);
   });
 });
