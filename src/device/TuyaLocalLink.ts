@@ -91,6 +91,21 @@ export default class TuyaLocalLink extends EventEmitter {
     }
   }
 
+  /** Raw write by data point id, for devices without a schema (e.g. the `ir_send` of an IR+RF hub). */
+  async sendDps(deviceID: string, dps: Record<string, unknown>): Promise<boolean> {
+    const entry = this.entries.get(deviceID);
+    if (!entry || !entry.connection.connected) {
+      return false;
+    }
+    try {
+      await entry.connection.setDps(dps);
+      return true;
+    } catch (error) {
+      this.log.debug('Local send failed (%s): %s', deviceID, (error as Error)?.message ?? error);
+      return false;
+    }
+  }
+
   toDps(device: TuyaDevice, commands: TuyaDeviceStatus[]): Record<string, unknown> | undefined {
     const dps: Record<string, unknown> = {};
     for (const { code, value } of commands) {

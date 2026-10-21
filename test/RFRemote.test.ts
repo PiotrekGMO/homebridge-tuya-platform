@@ -69,17 +69,44 @@ describe('RF remotes on an IR+RF hub', () => {
     expect(devices[2].remote_keys).toBeUndefined(); // not an RF remote, left alone
   });
 
-  test('keys are sent as learned codes through the infrared API', async () => {
+  test('RF keys are issued to the hub as its ir_send property, the code is the whole payload', async () => {
     const { manager, post } = makeManager(responses);
     const devices = makeDevices();
     await manager.updateInfraredRemotes(devices);
 
     const shutters = devices[1];
-    await manager.sendInfraredKey(shutters, shutters.remote_keys!.key_list.find(key => key.key === 'power_on')!);
-    expect(post).toHaveBeenCalledWith(
-      `/v2.0/infrareds/${HUB}/remotes/${SHUTTERS}/learning-codes`,
-      { code: '{"rf_type":"sub_2g","key1":{"code":"c1"}}' },
-    );
+    const res = await manager.sendInfraredKey(shutters, shutters.remote_keys!.key_list.find(key => key.key === 'power_on')!);
+    expect(res.success).toBe(true);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledWith(`/v2.0/cloud/thing/${HUB}/shadow/properties/issue`, {
+      properties: JSON.stringify({ ir_send: '{"rf_type":"sub_2g","key1":{"code":"c1"}}' }),
+    });
+  });
+
+  test('falls back to the device commands API when the thing model rejects the property', async () => {
+    const { manager, post } = makeManager(responses);
+    post.mockImplementation((async (path: string) => path.includes('/shadow/')
+      ? { success: false, code: 2008, msg: 'rejected' } : { success: true, result: true }) as any);
+    const devices = makeDevices();
+    await manager.updateInfraredRemotes(devices);
+
+    const shutters = devices[1];
+    const res = await manager.sendInfraredKey(shutters, shutters.remote_keys!.key_list.find(key => key.key === 'stop')!);
+    expect(res.success).toBe(true);
+    expect(post).toHaveBeenLastCalledWith(`/v1.0/devices/${HUB}/commands`, {
+      commands: [{ code: 'ir_send', value: '{"rf_type":"sub_2g","key1":{"code":"c3"}}' }],
+    });
+  });
+
+  test('reports failure when neither path is accepted', async () => {
+    const { manager, post } = makeManager(responses);
+    post.mockImplementation((async () => ({ success: false, code: 1, msg: 'nope' })) as any);
+    const devices = makeDevices();
+    await manager.updateInfraredRemotes(devices);
+
+    const shutters = devices[1];
+    const res = await manager.sendInfraredKey(shutters, shutters.remote_keys!.key_list[0]);
+    expect(res.success).toBe(false);
   });
 
   test('blinds with open/close keys get the window covering accessory, other RF remotes do not', async () => {

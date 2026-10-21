@@ -1,5 +1,5 @@
 import EventEmitter from 'events';
-import TuyaOpenAPI from '../core/TuyaOpenAPI';
+import TuyaOpenAPI, { TuyaOpenAPIResponse } from '../core/TuyaOpenAPI';
 import TuyaOpenMQ from '../core/TuyaOpenMQ';
 import { TuyaLocalClientFactory } from '../core/TuyaLocal';
 import { TuyaPlatformLocalDeviceConfig } from '../config';
@@ -403,9 +403,45 @@ export default class TuyaDeviceManager extends EventEmitter {
     }
   }
 
+  describe(res: TuyaOpenAPIResponse) {
+    return res.success === false ? `failed, code = ${res.code}, msg = ${res.msg}` : `ok, result = ${JSON.stringify(res.result)}`;
+  }
+
+  /**
+   * A learned RF code is the complete payload of the hub's `ir_send` data point (dp 201): it already
+   * contains `"control":"rfstudy_send"`. The infrared `learning-codes` endpoint does not transmit it.
+   */
+  async sendRFCode(hubID: string, device: TuyaDevice, key: TuyaIRRemoteKeyListItem) {
+    const code = key.learning_code!;
+
+    if (this.cloud) {
+      let res = await this.api.post(`/v2.0/cloud/thing/${hubID}/shadow/properties/issue`, {
+        properties: JSON.stringify({ ir_send: code }),
+      });
+      this.log.info('RF key "%s" of %s sent through thing model: %s', key.key, device.name, this.describe(res));
+
+      if (res.success === false) {
+        res = await this.api.post(`/v1.0/devices/${hubID}/commands`, { commands: [{ code: 'ir_send', value: code }] });
+        this.log.info('RF key "%s" of %s sent through commands: %s', key.key, device.name, this.describe(res));
+      }
+      if (res.success !== false || !this.local) {
+        return res;
+      }
+    }
+
+    if (this.local && await this.local.sendDps(hubID, { '201': code })) {
+      this.log.info('RF key "%s" of %s sent over LAN through the hub.', key.key, device.name);
+      return { success: true };
+    }
+    return { success: false, code: -1, msg: 'RF hub is not reachable' };
+  }
+
   async sendInfraredKey(device: TuyaDevice, key: TuyaIRRemoteKeyListItem) {
     const { parent_id, id } = device;
     const { category_id, remote_index } = device.remote_keys!;
+    if (key.learning_code && device.isRFRemoteControl()) {
+      return await this.sendRFCode(parent_id!, device, key);
+    }
     if (key.learning_code) {
       return await this.sendInfraredDIYCommands(parent_id!, id, key.learning_code);
     }
