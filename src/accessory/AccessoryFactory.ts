@@ -37,6 +37,7 @@ import SceneAccessory from './SceneAccessory';
 import AirConditionerAccessory from './AirConditionerAccessory';
 import IRControlHubAccessory from './IRControlHubAccessory';
 import IRGenericAccessory from './IRGenericAccessory';
+import IRWindowCoveringAccessory from './IRWindowCoveringAccessory';
 import IRAirConditionerAccessory from './IRAirConditionerAccessory';
 import SecuritySystemAccessory from './SecuritySystemAccessory';
 import VibrationSensorAccessory from './VibrationSensorAccessory';
@@ -227,13 +228,12 @@ export default class AccessoryFactory {
 
     // IR Remote Control
     if (device.isIRRemoteControl()) {
-      switch (device.remote_keys?.category_id) {
-        case 5: // AC
-          handler = new IRAirConditionerAccessory(platform, accessory);
-          break;
-        default:
-          handler = new IRGenericAccessory(platform, accessory);
-          break;
+      if (IRWindowCoveringAccessory.supports(device)) {
+        handler = new IRWindowCoveringAccessory(platform, accessory);
+      } else if (!device.isRFRemoteControl() && device.remote_keys?.category_id === 5) { // AC (RF category 5 is not an AC)
+        handler = new IRAirConditionerAccessory(platform, accessory);
+      } else {
+        handler = new IRGenericAccessory(platform, accessory);
       }
     }
 

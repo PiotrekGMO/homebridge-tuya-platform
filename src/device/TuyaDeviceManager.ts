@@ -11,6 +11,7 @@ import TuyaDevice, {
   TuyaDeviceSchemaMode,
   TuyaDeviceSchemaProperty,
   TuyaDeviceStatus,
+  TuyaIRRemoteKeyListItem,
 } from './TuyaDevice';
 
 enum Events {
@@ -340,23 +341,75 @@ export default class TuyaDeviceManager extends EventEmitter {
           }
           subDevice.status = Object.entries(res.result).map(([key, value]) => ({code: key, value} as TuyaDeviceStatus));
         } else if (category_id === 999) { // DIY Device
-          const res = await this.getInfraredDIYKeys(irDevice.id, subDevice.id);
-          if (!res.success) {
-            this.log.warn('Get infrared diy keys failed. deviceId = %d, code = %s, msg = %s', subDevice.id, res.code, res.msg);
-            continue;
-          }
-          const key_list = subDevice.remote_keys?.key_list || [];
-          for (const key of key_list) {
-            const item = (res.result as []).find(item => item['id'] === key.key_id && item['key'] === key.key);
-            if (!item) {
-              continue;
-            }
-            this.log.debug('learning_code:', item['code']);
-            key.learning_code = item['code'];
-          }
+          await this.attachLearningCodes(irDevice, subDevice);
         }
       }
+
+      await this.updateRFRemotes(irDevice, allDevices);
     }
+  }
+
+  /** Learned (DIY / RF) keys carry the code to send in `learning_code`. */
+  async attachLearningCodes(irDevice: TuyaDevice, subDevice: TuyaDevice) {
+    const res = await this.getInfraredDIYKeys(irDevice.id, subDevice.id);
+    if (!res.success) {
+      this.log.warn('Get infrared diy keys failed. deviceId = %d, code = %s, msg = %s', subDevice.id, res.code, res.msg);
+      return;
+    }
+    const key_list = subDevice.remote_keys?.key_list || [];
+    for (const key of key_list) {
+      const item = (res.result as []).find(item => item['id'] === key.key_id && item['key'] === key.key);
+      if (!item) {
+        continue;
+      }
+      this.log.debug('learning_code:', item['code']);
+      key.learning_code = item['code'];
+    }
+  }
+
+  async getSubDevices(deviceID: string) {
+    const res = await this.api.get(`/v1.0/devices/${deviceID}/sub-devices`);
+    return res;
+  }
+
+  /**
+   * RF remotes (e.g. blinds learned on a Smart IR+RF hub) are not listed by `/infrareds/{id}/remotes`,
+   * but they are sub-devices of the hub and their keys / learned codes use the same infrared API.
+   */
+  async updateRFRemotes(irDevice: TuyaDevice, allDevices: TuyaDevice[]) {
+    const res = await this.getSubDevices(irDevice.id);
+    if (!res.success) {
+      this.log.debug('Get sub devices failed. deviceId = %s, code = %s, msg = %s', irDevice.id, res.code, res.msg);
+      return;
+    }
+
+    for (const { id } of res.result as Array<{ id: string }>) {
+      const subDevice = allDevices.find(device => device.id === id);
+      if (!subDevice || subDevice.remote_keys || !subDevice.category.startsWith('rf_')) {
+        continue;
+      }
+
+      const keys = await this.getInfraredKeys(irDevice.id, subDevice.id);
+      if (!keys.success) {
+        this.log.warn('Get RF remote keys failed. deviceId = %s, code = %s, msg = %s', subDevice.id, keys.code, keys.msg);
+        continue;
+      }
+      subDevice.parent_id = irDevice.id;
+      subDevice.schema = [];
+      subDevice.remote_keys = keys.result;
+      await this.attachLearningCodes(irDevice, subDevice);
+      this.log.info('RF remote %s (%s): keys %s', subDevice.name, subDevice.category,
+        (subDevice.remote_keys?.key_list ?? []).map(key => key.key).join(', '));
+    }
+  }
+
+  async sendInfraredKey(device: TuyaDevice, key: TuyaIRRemoteKeyListItem) {
+    const { parent_id, id } = device;
+    const { category_id, remote_index } = device.remote_keys!;
+    if (key.learning_code) {
+      return await this.sendInfraredDIYCommands(parent_id!, id, key.learning_code);
+    }
+    return await this.sendInfraredCommands(parent_id!, id, category_id, remote_index, key.key, key.key_id);
   }
 
   async sendInfraredCommands(infraredID: string, remoteID: string, category_id: number, remote_index: number, key: string, key_id: number) {

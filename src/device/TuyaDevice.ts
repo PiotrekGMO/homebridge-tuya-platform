@@ -143,4 +143,9 @@ export default class TuyaDevice {
     return this.remote_keys !== undefined;
   }
 
+  /** Radio (433 MHz etc.) remote learned on an IR+RF hub, e.g. `rf_venetian_blind`. */
+  isRFRemoteControl() {
+    return this.isIRRemoteControl() && this.category.startsWith('rf_');
+  }
+
 }
