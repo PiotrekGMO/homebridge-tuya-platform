@@ -37,6 +37,7 @@ export const LOGIN_ERROR_MESSAGES = {
 };
 
 const RELOGIN_MIN_INTERVAL = 2 * 60 * 1000;
+const TOKEN_INVALID_CODE = 1010;
 
 const API_NOT_SUBSCRIBED_ERROR = `
 API not subscribed. Please go to "Tuya IoT Platform -> Cloud -> Development -> Project -> Service API",
@@ -303,7 +304,24 @@ export default class TuyaOpenAPI {
     return res;
   }
 
+  /**
+   * When the cloud says the token is invalid (code 1010, e.g. another session logged in with the same
+   * account) log in again and repeat the request once.
+   */
   async request(method: string, path: string, params?, body?) {
+    const token = this.tokenInfo.access_token;
+    const res = await this._request(method, path, params, body);
+    if (res && res.success === false && res.code === TOKEN_INVALID_CODE
+      && this.isLogin() && !this.isTokenManagementAPI(path)) {
+      await this.relogin();
+      if (this.tokenInfo.access_token !== token) {
+        return this._request(method, path, params, body);
+      }
+    }
+    return res;
+  }
+
+  async _request(method: string, path: string, params?, body?) {
     await this._refreshAccessTokenIfNeed(path);
 
     const now = new Date().getTime();

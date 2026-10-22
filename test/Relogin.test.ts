@@ -50,6 +50,31 @@ describe('TuyaOpenAPI relogin', () => {
     expect(post).toHaveBeenCalledTimes(2); // too soon after the previous relogin
   });
 
+  test('repeats a request once after logging in again when the cloud rejects the token (1010)', async () => {
+    const { api, post } = makeApi();
+    await api.homeLogin(48, 'user@example.com', 'secret', 'tuya');
+    const send = jest.spyOn(api as any, '_request')
+      .mockResolvedValueOnce({ success: false, code: 1010, msg: 'token invalid' } as never)
+      .mockResolvedValueOnce({ success: true, result: 'ok' } as never);
+    post.mockClear();
+
+    // the login itself goes through `post`, which is mocked, so the token changes to "new"
+    api.tokenInfo.access_token = 'old';
+    const res: any = await api.request('get', '/v1.0/devices');
+    expect(res.result).toBe('ok');
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenCalledTimes(1); // exactly one login
+  });
+
+  test('does not retry forever when logging in again is not possible', async () => {
+    const { api } = makeApi();
+    api.tokenInfo = { access_token: 'old', refresh_token: 'r', uid: 'u', expire: Date.now() + 3600000 };
+    const send = jest.spyOn(api as any, '_request').mockResolvedValue({ success: false, code: 1010, msg: 'token invalid' } as never);
+    const res: any = await api.request('get', '/v1.0/devices');
+    expect(res.success).toBe(false);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   test('does nothing without a previous login', async () => {
     const { api, post } = makeApi();
     await api.relogin();
