@@ -4,6 +4,7 @@ import { TuyaPlatform } from '../platform';
 
 import BaseAccessory from './BaseAccessory';
 import LightAccessory from './LightAccessory';
+import PIRLightAccessory from './PIRLightAccessory';
 import DimmerAccessory from './DimmerAccessory';
 import OutletAccessory from './OutletAccessory';
 import SwitchAccessory from './SwitchAccessory';
@@ -69,7 +70,9 @@ export default class AccessoryFactory {
       case 'gyd':
       case 'tyndj':
       case 'sxd':
-        handler = new LightAccessory(platform, accessory);
+        handler = PIRLightAccessory.supports(device)
+          ? new PIRLightAccessory(platform, accessory)
+          : new LightAccessory(platform, accessory);
         break;
       case 'tgq':
       case 'tgkg':
