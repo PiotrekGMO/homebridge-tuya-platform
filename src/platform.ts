@@ -241,6 +241,15 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
     this.deviceManager!.on(TuyaDeviceManager.Events.DEVICE_DELETE, this.removeAccessory.bind(this));
 
     if (localEnabled) {
+      // Addresses and protocol versions learned earlier, so the devices are found without a UDP search.
+      const remembered = await loadSnapshot(this.getSnapshotFile());
+      for (const device of devices) {
+        const known = remembered.find(item => item.id === device.id)?.local;
+        if (known) {
+          device.local = { ...known, ...device.local };
+        }
+      }
+
       this.deviceManager!.on(TuyaDeviceManager.Events.DEVICE_LOCAL_UPDATE, () => this.saveLocalSnapshotSoon());
       this.deviceManager!.enableLocal(devices, {
         exclude: this.options.local?.exclude,
