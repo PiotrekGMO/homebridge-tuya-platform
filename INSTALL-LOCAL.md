@@ -27,8 +27,8 @@ automations stay as they are. It adds LAN control (see [DESIGN-LOCAL.md](./DESIG
 
 ## Protect the accessories
 
-In the Homebridge UI, Settings, switch on **Keep Accessories Of Uninstalled Plugins** (the `-K` / `--keep-orphans`
-flag). If the plugin ever fails to load, Home keeps its accessories instead of deleting them. Also enable the
+In the Homebridge UI, Settings, switch on **Keep Accessories Of Uninstalled Plugins** (in the Polish UI:
+**Zachowaj akcesoria odinstalowanych wtyczek -K**, the `-K` / `--keep-orphans` flag). If the plugin ever fails to load, Home keeps its accessories instead of deleting them. Also enable the
 scheduled backups there.
 
 ## Configuration
