@@ -1,7 +1,7 @@
 {
   "name": "@0x5e/homebridge-tuya-platform",
   "displayName": "Tuya",
-  "version": "1.7.0-beta.58-local.18",
+  "version": "1.7.0-beta.58-local.19",
   "description": "Fork version of official Tuya Homebridge plugin. Brings a bunch of bug fix and new device support.",
   "license": "MIT",
   "repository": {
@@ -23,6 +23,17 @@
     "homebridge": "^1.6.0 || ^2.0.0"
   },
   "main": "dist/index.js",
+  "files": [
+    "dist",
+    "config.schema.json",
+    "README.md",
+    "INSTALL-LOCAL.md",
+    "DESIGN-LOCAL.md",
+    "ADVANCED_OPTIONS.md",
+    "SUPPORTED_DEVICES.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "scripts": {
     "lint": "eslint src/**/*.ts --max-warnings=0",
     "test": "jest",

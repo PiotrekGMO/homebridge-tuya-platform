@@ -105,6 +105,8 @@ Before you can configure, you must go to the [Tuya IoT Platform](https://iot.tuy
 See [ADVANCED_OPTIONS.md](./ADVANCED_OPTIONS.md)
 
 #### Local (LAN) control — fork feature
+Install and update: [INSTALL-LOCAL.md](./INSTALL-LOCAL.md).
+
 Design notes: [DESIGN-LOCAL.md](./DESIGN-LOCAL.md).
 
 - `options.local.enabled` - **optional**: Send commands and receive status over the local network (TCP 6668). The cloud is used for the device list and as a fallback. Every successful cloud sync writes `persist/TuyaLocalSnapshot.json` (local keys, data point ids, last status), so the plugin keeps working if the cloud project expires. If the cloud login fails, the plugin starts from this snapshot. (Default: `false`)
