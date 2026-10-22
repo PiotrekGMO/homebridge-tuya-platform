@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import EventEmitter from 'events';
 import { describe, expect, test, jest } from '@jest/globals';
 import TuyaOpenAPI from '../src/core/TuyaOpenAPI';
 import TuyaDevice from '../src/device/TuyaDevice';
@@ -47,6 +48,12 @@ const codes = {
   ],
 };
 
+const expected = (c: string) => JSON.stringify({
+  control: 'rfstudy_send', rf_type: 'sub_2g', mode: 0,
+  key1: { times: 6, intervals: 0, ver: '2', delay: 0, code: c },
+  feq: 0, rate: 0, ver: '2',
+});
+
 const responses = {
   [`/infrareds/${HUB}/remotes`]: { success: true, result: [] }, // RF remotes are not listed here
   [`/devices/${HUB}/sub-devices`]: { success: true, result: [{ id: SHUTTERS }, { id: 'zb1' }] },
@@ -80,7 +87,7 @@ describe('RF remotes on an IR+RF hub', () => {
     expect(devices[1].remote_keys?.key_list).toHaveLength(3);
   });
 
-  test('RF keys are issued to the hub as its ir_send property, the code is the whole payload', async () => {
+  test('without a LAN link RF keys go to the hub as its ir_send property, with ver 2', async () => {
     const { manager, post } = makeManager(responses);
     const devices = makeDevices();
     await manager.updateInfraredRemotes(devices);
@@ -90,8 +97,58 @@ describe('RF remotes on an IR+RF hub', () => {
     expect(res.success).toBe(true);
     expect(post).toHaveBeenCalledTimes(1);
     expect(post).toHaveBeenCalledWith(`/v2.0/cloud/thing/${HUB}/shadow/properties/issue`, {
-      properties: JSON.stringify({ ir_send: '{"rf_type":"sub_2g","key1":{"code":"c1"}}' }),
+      properties: JSON.stringify({ ir_send: expected('c1') }),
     });
+  });
+
+  test('RF keys are written to the hub over LAN first, connecting only for the write', async () => {
+    const { manager, post } = makeManager(responses);
+    const devices = makeDevices();
+    await manager.updateInfraredRemotes(devices);
+
+    const sets: any[] = [];
+    const clients: any[] = [];
+    const factory = (options: any) => {
+      const client = new EventEmitter() as any;
+      client.options = options;
+      client.connect = jest.fn(async () => true);
+      client.set = jest.fn(async (arg: any) => { sets.push(arg); return {}; });
+      client.disconnect = jest.fn();
+      clients.push(client);
+      return client;
+    };
+    devices[0].local_key = '0123456789abcdef';
+    manager.enableLocal([devices[0]], { localDevices: [{ id: HUB, ip: '192.168.1.142', version: '3.3' }] }, factory as any);
+    expect(clients).toHaveLength(0); // no standing connection to the hub
+
+    const shutters = devices[1];
+    const res = await manager.sendInfraredKey(shutters, shutters.remote_keys!.key_list.find(key => key.key === 'power_off')!);
+    expect(res.success).toBe(true);
+    expect(post).not.toHaveBeenCalled();
+    expect(clients).toHaveLength(1);
+    expect(clients[0].options).toMatchObject({ ip: '192.168.1.142', version: '3.3' });
+    expect(sets).toEqual([{ multiple: true, data: { '201': expected('c2') } }]);
+    expect(clients[0].disconnect).toHaveBeenCalled();
+  });
+
+  test('RF keys fall back to the cloud when the hub cannot be reached over LAN', async () => {
+    const { manager, post } = makeManager(responses);
+    const devices = makeDevices();
+    await manager.updateInfraredRemotes(devices);
+
+    const factory = () => {
+      const client = new EventEmitter() as any;
+      client.connect = jest.fn(async () => { throw new Error('ECONNREFUSED'); });
+      client.disconnect = jest.fn();
+      return client;
+    };
+    devices[0].local_key = '0123456789abcdef';
+    manager.enableLocal([devices[0]], { localDevices: [{ id: HUB, ip: '192.168.1.142', version: '3.3' }] }, factory as any);
+
+    const shutters = devices[1];
+    const res = await manager.sendInfraredKey(shutters, shutters.remote_keys!.key_list.find(key => key.key === 'power_off')!);
+    expect(res.success).toBe(true);
+    expect(post).toHaveBeenCalledTimes(1);
   });
 
   test('falls back to the device commands API when the thing model rejects the property', async () => {
@@ -105,7 +162,7 @@ describe('RF remotes on an IR+RF hub', () => {
     const res = await manager.sendInfraredKey(shutters, shutters.remote_keys!.key_list.find(key => key.key === 'stop')!);
     expect(res.success).toBe(true);
     expect(post).toHaveBeenLastCalledWith(`/v1.0/devices/${HUB}/commands`, {
-      commands: [{ code: 'ir_send', value: '{"rf_type":"sub_2g","key1":{"code":"c3"}}' }],
+      commands: [{ code: 'ir_send', value: expected('c3') }],
     });
   });
 

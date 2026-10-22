@@ -31,6 +31,7 @@ const defaultFactory: TuyaLocalClientFactory = options => new TuyAPI({
 }) as unknown as TuyaLocalClient;
 
 const PROBE_VERSIONS = ['3.3', '3.4', '3.5', '3.1'];
+const CONNECT_TIMEOUT = 8000;
 const MIN_DELAY = 2000;
 const MAX_DELAY = 60000;
 const MAX_DELAY_NEVER_CONNECTED = 300000;
@@ -89,6 +90,40 @@ export default class TuyaLocalConnection extends EventEmitter {
       throw new Error('Local connection is not established');
     }
     await this.client.set({ multiple: true, data: dps });
+  }
+
+  /**
+   * Connect, write and disconnect again, without keeping the connection open. For IR/RF hubs, which
+   * accept only one connection at a time (the phone app may need it) and never acknowledge a write.
+   * @returns true when the write was sent, false when the device could not be reached.
+   */
+  async sendOnce(dps: Record<string, unknown>, ackWaitMs = 1500): Promise<boolean> {
+    const client = this.factory({
+      id: this.options.id,
+      key: this.options.key,
+      ip: this.options.ip,
+      version: this.version,
+    });
+    client.on('error', error => this.log.debug('Local error (%s): %s', this.options.id, (error as Error)?.message ?? error));
+
+    try {
+      await Promise.race([
+        client.connect(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('connect timeout')), CONNECT_TIMEOUT).unref?.()),
+      ]);
+      if (client.device?.ip) {
+        this.emit('ip', client.device.ip);
+      }
+      return await Promise.race([
+        client.set({ multiple: true, data: dps }).then(() => true, error => /timeout/i.test(String((error as Error)?.message))),
+        new Promise<boolean>(resolve => setTimeout(() => resolve(true), ackWaitMs).unref?.()),
+      ]);
+    } catch (error) {
+      this.log.debug('Local write failed (%s): %s', this.options.id, (error as Error)?.message ?? error);
+      return false;
+    } finally {
+      this.safeDisconnect(client);
+    }
   }
 
   private async connect() {

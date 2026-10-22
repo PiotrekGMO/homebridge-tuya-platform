@@ -81,8 +81,10 @@ export default class TuyaDeviceManager extends EventEmitter {
 
       const ip = config?.ip ?? device.local?.ip;
       const version = config?.version ?? device.local?.version;
-      link.register(device, { key, ip, version });
-      this.log.info('Local control enabled for %s (%s)', device.name, ip ?? 'auto-discover');
+      // IR/RF hubs allow a single connection and never answer a write: connect only when sending.
+      const persistent = !device.isIRControlHub();
+      link.register(device, { key, ip, version, persistent });
+      this.log.info('Local control enabled for %s (%s%s)', device.name, ip ?? 'auto-discover', persistent ? '' : ', on demand');
     }
 
     link.start();
@@ -408,32 +410,51 @@ export default class TuyaDeviceManager extends EventEmitter {
   }
 
   /**
-   * A learned RF code is the complete payload of the hub's `ir_send` data point (dp 201): it already
-   * contains `"control":"rfstudy_send"`. The infrared `learning-codes` endpoint does not transmit it.
+   * The code a hub learned is the payload of its `ir_send` data point (dp 201), but the hub only
+   * transmits it when it also carries `"ver": "2"` (top level and in `key1`), which the cloud omits.
    */
-  async sendRFCode(hubID: string, device: TuyaDevice, key: TuyaIRRemoteKeyListItem) {
-    const code = key.learning_code!;
-
-    if (this.cloud) {
-      let res = await this.api.post(`/v2.0/cloud/thing/${hubID}/shadow/properties/issue`, {
-        properties: JSON.stringify({ ir_send: code }),
+  rfPayload(learningCode: string) {
+    try {
+      const learned = JSON.parse(learningCode);
+      const key1 = learned.key1 ?? {};
+      // Same fields in the same order as verified on a real hub (S16 Pro).
+      return JSON.stringify({
+        control: learned.control ?? 'rfstudy_send',
+        rf_type: learned.rf_type ?? 'sub_2g',
+        mode: learned.mode ?? 0,
+        key1: { times: key1.times ?? 6, intervals: key1.intervals ?? 0, ver: '2', delay: key1.delay ?? 0, code: key1.code },
+        feq: learned.feq ?? 0,
+        rate: learned.rate ?? 0,
+        ver: '2',
       });
-      this.log.info('RF key "%s" of %s sent through thing model: %s', key.key, device.name, this.describe(res));
-
-      if (res.success === false) {
-        res = await this.api.post(`/v1.0/devices/${hubID}/commands`, { commands: [{ code: 'ir_send', value: code }] });
-        this.log.info('RF key "%s" of %s sent through commands: %s', key.key, device.name, this.describe(res));
-      }
-      if (res.success !== false || !this.local) {
-        return res;
-      }
+    } catch (error) {
+      return learningCode;
     }
+  }
 
+  async sendRFCode(hubID: string, device: TuyaDevice, key: TuyaIRRemoteKeyListItem) {
+    const code = this.rfPayload(key.learning_code!);
+
+    // Over LAN first, as the phone app does. The hub never acknowledges, so a sent write counts as done.
     if (this.local && await this.local.sendDps(hubID, { '201': code })) {
       this.log.info('RF key "%s" of %s sent over LAN through the hub.', key.key, device.name);
       return { success: true };
     }
-    return { success: false, code: -1, msg: 'RF hub is not reachable' };
+
+    if (!this.cloud) {
+      return { success: false, code: -1, msg: 'RF hub is not reachable' };
+    }
+
+    let res = await this.api.post(`/v2.0/cloud/thing/${hubID}/shadow/properties/issue`, {
+      properties: JSON.stringify({ ir_send: code }),
+    });
+    this.log.info('RF key "%s" of %s sent through the cloud (thing model): %s', key.key, device.name, this.describe(res));
+
+    if (res.success === false) {
+      res = await this.api.post(`/v1.0/devices/${hubID}/commands`, { commands: [{ code: 'ir_send', value: code }] });
+      this.log.info('RF key "%s" of %s sent through the cloud (commands): %s', key.key, device.name, this.describe(res));
+    }
+    return res;
   }
 
   async sendInfraredKey(device: TuyaDevice, key: TuyaIRRemoteKeyListItem) {

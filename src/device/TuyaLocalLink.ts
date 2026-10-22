@@ -7,6 +7,8 @@ export interface TuyaLocalRegistration {
   key: string;
   ip?: string;
   version?: string;
+  // false: connect only for the moment of a write (IR/RF hubs, which allow a single connection)
+  persistent?: boolean;
 }
 
 /**
@@ -18,7 +20,7 @@ export interface TuyaLocalRegistration {
  */
 export default class TuyaLocalLink extends EventEmitter {
 
-  private entries = new Map<string, { device: TuyaDevice; connection: TuyaLocalConnection }>();
+  private entries = new Map<string, { device: TuyaDevice; connection: TuyaLocalConnection; persistent: boolean }>();
 
   constructor(
     private readonly log: Logger,
@@ -43,7 +45,7 @@ export default class TuyaLocalLink extends EventEmitter {
     connection.on('version', version => this.emit('version', device.id, version));
     connection.on('ip', ip => this.emit('ip', device.id, ip));
 
-    this.entries.set(device.id, { device, connection });
+    this.entries.set(device.id, { device, connection, persistent: registration.persistent !== false });
     return connection;
   }
 
@@ -53,7 +55,7 @@ export default class TuyaLocalLink extends EventEmitter {
   }
 
   start() {
-    this.entries.forEach(({ connection }) => connection.start());
+    this.entries.forEach(({ connection, persistent }) => persistent && connection.start());
   }
 
   stop() {
@@ -94,7 +96,13 @@ export default class TuyaLocalLink extends EventEmitter {
   /** Raw write by data point id, for devices without a schema (e.g. the `ir_send` of an IR+RF hub). */
   async sendDps(deviceID: string, dps: Record<string, unknown>): Promise<boolean> {
     const entry = this.entries.get(deviceID);
-    if (!entry || !entry.connection.connected) {
+    if (!entry) {
+      return false;
+    }
+    if (!entry.persistent) {
+      return entry.connection.sendOnce(dps);
+    }
+    if (!entry.connection.connected) {
       return false;
     }
     try {
