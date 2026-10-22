@@ -202,6 +202,7 @@ class BaseAccessory {
     }
 
     commands = commands.filter((status) => status.code && status.value !== undefined);
+    this.log.debug('Send commands: %o', commands);
 
     if (this.device.online === false) {
       this.log.warn('Device is offline, skip send command.');
@@ -265,6 +266,7 @@ class BaseAccessory {
   }
 
   async onDeviceStatusUpdate(status: TuyaDeviceStatus[]) {
+    this.log.debug('Status update: %o', status);
     this.updateAllValues();
   }
 

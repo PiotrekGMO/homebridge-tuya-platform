@@ -14,6 +14,8 @@ const SCHEMA_CODE = {
   MODE: ['device_mode'],
 };
 
+const MODE_SETTLE_MS = 400;
+
 // Commands that only make sense when the lamp is controlled by hand.
 const MANUAL_CODES = [
   ...SCHEMA_CODE.ON, ...SCHEMA_CODE.BRIGHTNESS, ...SCHEMA_CODE.COLOR_TEMP, ...SCHEMA_CODE.COLOR, ...SCHEMA_CODE.WORK_MODE,
@@ -86,11 +88,16 @@ export default class PIRLightAccessory extends LightAccessory {
 
   async sendCommands(commands: TuyaDeviceStatus[], debounce?: boolean) {
     const forced = withManualMode(commands, this.getStatus(SCHEMA_CODE.MODE[0])?.value);
-    await super.sendCommands(forced, debounce);
-
-    if (forced !== commands) {
-      this.autoService?.getCharacteristic(this.Characteristic.On).updateValue(false);
+    if (forced === commands) {
+      return super.sendCommands(commands, debounce);
     }
+
+    // The lamp applies data points in numeric order, so a mode change sent together with the light
+    // would land last and reset it. Switch to manual first, let it settle, then send the light.
+    await super.sendCommands([forced[0]], false);
+    this.autoService?.getCharacteristic(this.Characteristic.On).updateValue(false);
+    await new Promise(resolve => setTimeout(resolve, MODE_SETTLE_MS));
+    return super.sendCommands(commands, debounce);
   }
 
 }
