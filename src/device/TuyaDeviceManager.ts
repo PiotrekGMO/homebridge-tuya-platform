@@ -83,7 +83,7 @@ export default class TuyaDeviceManager extends EventEmitter {
       const version = config?.version ?? device.local?.version;
       // IR/RF hubs allow a single connection and never answer a write: connect only when sending.
       const persistent = !device.isIRControlHub();
-      link.register(device, { key, ip, version, persistent });
+      link.register(device, { key, ip, version, persistent, ipFixed: !!config?.ip });
       this.log.info('Local control enabled for %s (%s%s)', device.name, ip ?? 'auto-discover', persistent ? '' : ', on demand');
     }
 

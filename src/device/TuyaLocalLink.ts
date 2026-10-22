@@ -9,6 +9,7 @@ export interface TuyaLocalRegistration {
   version?: string;
   // false: connect only for the moment of a write (IR/RF hubs, which allow a single connection)
   persistent?: boolean;
+  ipFixed?: boolean; // the address was configured by hand, never forget it
 }
 
 /**
@@ -36,6 +37,7 @@ export default class TuyaLocalLink extends EventEmitter {
       id: device.id,
       key: registration.key,
       ip: registration.ip,
+      ipFixed: registration.ipFixed,
       version: registration.version,
     }, this.log, this.factory);
 

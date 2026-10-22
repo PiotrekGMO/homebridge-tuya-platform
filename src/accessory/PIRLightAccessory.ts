@@ -15,7 +15,7 @@ const SCHEMA_CODE = {
 };
 
 const MODE_SETTLE_MS = 400;
-const FLIP_WAIT_MS = 1500;
+const FLIP_WAIT_MS = 1000;
 
 // Commands that only make sense when the lamp is controlled by hand.
 const MANUAL_CODES = [
@@ -39,6 +39,7 @@ export default class PIRLightAccessory extends LightAccessory {
   private autoService?;
   private holdOn?: boolean; // light state to keep while the mode changes
   private flipSeen = false;
+  private reflex = false; // the light state the lamp switches to by itself on the mode change
 
   static supports(device: TuyaDevice) {
     const mode = device.schema.find(schema => schema.code === SCHEMA_CODE.MODE[0]);
@@ -100,17 +101,20 @@ export default class PIRLightAccessory extends LightAccessory {
    */
   private async changeMode(mode: 'auto' | 'manual') {
     const on = this.getStatus(SCHEMA_CODE.ON[0])?.value;
-    this.holdOn = typeof on === 'boolean' ? on : undefined;
+    this.reflex = (mode === 'manual'); // the light state the lamp itself switches to
     this.flipSeen = false;
+    // Only a light that differs from the reflex will be flipped by the lamp.
+    this.holdOn = (typeof on === 'boolean' && on !== this.reflex) ? on : undefined;
 
     try {
       await super.sendCommands([{ code: SCHEMA_CODE.MODE[0], value: mode }], false);
       if (this.holdOn !== undefined) {
         const deadline = Date.now() + FLIP_WAIT_MS;
-        while (!this.flipSeen && Date.now() < deadline) {
+        while (!this.flipSeen && this.holdOn !== undefined && Date.now() < deadline) {
           await new Promise(resolve => setTimeout(resolve, 50));
         }
-        if (this.flipSeen) {
+        // A command for the light from the user (holdOn cleared) always wins over restoring the old state.
+        if (this.flipSeen && this.holdOn !== undefined) {
           await super.sendCommands([{ code: SCHEMA_CODE.ON[0], value: this.holdOn }], false);
           await new Promise(resolve => setTimeout(resolve, MODE_SETTLE_MS)); // let the echo pass
         }
@@ -121,7 +125,8 @@ export default class PIRLightAccessory extends LightAccessory {
   }
 
   async onDeviceStatusUpdate(status: TuyaDeviceStatus[]) {
-    if (this.holdOn !== undefined && status.some(item => item.code === SCHEMA_CODE.ON[0] && item.value !== this.holdOn)) {
+    if (this.holdOn !== undefined && !this.flipSeen
+      && status.some(item => item.code === SCHEMA_CODE.ON[0] && item.value === this.reflex)) {
       this.flipSeen = true;
       const cached = this.device.status.find(item => item.code === SCHEMA_CODE.ON[0]);
       if (cached) {
@@ -132,6 +137,10 @@ export default class PIRLightAccessory extends LightAccessory {
   }
 
   async sendCommands(commands: TuyaDeviceStatus[], debounce?: boolean) {
+    if (commands.some(command => command.code === SCHEMA_CODE.ON[0])) {
+      this.holdOn = undefined; // the user decided about the light, do not restore anything
+    }
+
     const forced = withManualMode(commands, this.getStatus(SCHEMA_CODE.MODE[0])?.value);
     if (forced === commands) {
       return super.sendCommands(commands, debounce);

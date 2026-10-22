@@ -8,6 +8,9 @@ export interface TuyaLocalConnectionOptions {
   id: string;
   key: string;
   ip?: string; // discovered over UDP when missing
+  // true when the address was configured by hand; a remembered address that stops answering
+  // (DHCP gave the device another one) is forgotten and looked up again.
+  ipFixed?: boolean;
   version?: string; // probed (3.3, 3.4, 3.5, 3.1) when missing
 }
 
@@ -32,6 +35,7 @@ const defaultFactory: TuyaLocalClientFactory = options => new TuyAPI({
 
 const PROBE_VERSIONS = ['3.3', '3.4', '3.5', '3.1'];
 const CONNECT_TIMEOUT = 8000;
+const STALE_IP_FAILURES = 2;
 const MIN_DELAY = 2000;
 const MAX_DELAY = 60000;
 const MAX_DELAY_NEVER_CONNECTED = 300000;
@@ -52,6 +56,7 @@ export default class TuyaLocalConnection extends EventEmitter {
   private client?: TuyaLocalClient;
   private stopped = true;
   private everConnected = false;
+  private failures = 0;
   private retryDelay = MIN_DELAY;
   private timer?: NodeJS.Timeout;
 
@@ -98,6 +103,18 @@ export default class TuyaLocalConnection extends EventEmitter {
    * @returns true when the write was sent, false when the device could not be reached.
    */
   async sendOnce(dps: Record<string, unknown>, ackWaitMs = 1500): Promise<boolean> {
+    if (await this.writeOnce(dps, ackWaitMs)) {
+      return true;
+    }
+    if (this.options.ip && !this.options.ipFixed) {
+      this.log.debug('No answer from %s, looking for it on the network again.', this.options.id);
+      this.options.ip = undefined;
+      return this.writeOnce(dps, ackWaitMs);
+    }
+    return false;
+  }
+
+  private async writeOnce(dps: Record<string, unknown>, ackWaitMs: number): Promise<boolean> {
     const client = this.factory({
       id: this.options.id,
       key: this.options.key,
@@ -153,6 +170,7 @@ export default class TuyaLocalConnection extends EventEmitter {
       }
       this.connected = true;
       this.everConnected = true;
+      this.failures = 0;
       this.retryDelay = MIN_DELAY;
       if (!this.versionKnown) {
         this.versionKnown = true;
@@ -165,6 +183,12 @@ export default class TuyaLocalConnection extends EventEmitter {
       this.onData(status);
     } catch (error) {
       this.log.debug('Local connect failed (%s, v%s): %s', this.options.id, this.version, (error as Error)?.message ?? error);
+      this.failures++;
+      if (this.options.ip && !this.options.ipFixed && this.failures >= STALE_IP_FAILURES) {
+        this.log.debug('Forgetting the remembered address of %s, it is looked up again.', this.options.id);
+        this.options.ip = undefined;
+        this.failures = 0;
+      }
       this.onClientLost(client);
     }
   }

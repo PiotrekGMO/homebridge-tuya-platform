@@ -14,6 +14,7 @@ const log = { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn
 class FakeClient extends EventEmitter implements TuyaLocalClient {
   static instances: FakeClient[] = [];
   static acceptVersion = '3.3';
+  static deadIp?: string; // connecting to this address fails (the device got another one)
   sets: Record<string, unknown>[] = [];
   device = { ip: '192.168.1.50' };
 
@@ -23,6 +24,9 @@ class FakeClient extends EventEmitter implements TuyaLocalClient {
   }
 
   async connect() {
+    if (FakeClient.deadIp && this.options.ip === FakeClient.deadIp) {
+      throw new Error('EHOSTUNREACH');
+    }
     if (this.options.version !== FakeClient.acceptVersion) {
       throw new Error('Check device key or version');
     }
@@ -71,6 +75,7 @@ describe('TuyaLocalConnection', () => {
     jest.useFakeTimers();
     FakeClient.instances = [];
     FakeClient.acceptVersion = '3.3';
+    FakeClient.deadIp = undefined;
   });
   afterEach(() => { jest.useRealTimers(); });
 
@@ -134,6 +139,45 @@ describe('TuyaLocalConnection', () => {
     const connection = new TuyaLocalConnection({ id: 'dev1', key: 'k' }, log, factory);
     await expect(connection.setDps({ '1': true })).rejects.toThrow();
   });
+
+  test('forgets a remembered address that stopped answering and looks the device up again', async () => {
+    FakeClient.deadIp = '192.168.1.9';
+    const connection = new TuyaLocalConnection({ id: 'dev1', key: 'k', ip: '192.168.1.9', version: '3.3' }, log, factory);
+    connection.start();
+    await flush();
+    expect(connection.connected).toBe(false);
+
+    jest.advanceTimersByTime(2000); // second failure: the address is forgotten
+    await flush();
+    jest.advanceTimersByTime(4000);
+    await flush();
+
+    expect(connection.connected).toBe(true);
+    expect(FakeClient.instances.at(-1)!['options'].ip).toBeUndefined();
+    connection.stop();
+  });
+
+  test('keeps an address that was configured by hand', async () => {
+    FakeClient.deadIp = '192.168.1.9';
+    const connection = new TuyaLocalConnection({ id: 'dev1', key: 'k', ip: '192.168.1.9', ipFixed: true, version: '3.3' }, log, factory);
+    connection.start();
+    for (let i = 0; i < 4; i++) {
+      await flush();
+      jest.advanceTimersByTime(60000);
+    }
+    expect(connection.connected).toBe(false);
+    expect(FakeClient.instances.every(client => client['options'].ip === '192.168.1.9')).toBe(true);
+    connection.stop();
+  });
+
+  test('a one-off write retries without the remembered address when it does not answer', async () => {
+    FakeClient.deadIp = '192.168.1.9';
+    const connection = new TuyaLocalConnection({ id: 'hub', key: 'k', ip: '192.168.1.9', version: '3.3' }, log, factory);
+    const sent = await connection.sendOnce({ '201': 'x' }, 10);
+    expect(sent).toBe(true);
+    expect(FakeClient.instances).toHaveLength(2);
+    expect(FakeClient.instances[1]['options'].ip).toBeUndefined();
+  });
 });
 
 describe('TuyaLocalDeviceManager (no cloud)', () => {
@@ -141,6 +185,7 @@ describe('TuyaLocalDeviceManager (no cloud)', () => {
     jest.useFakeTimers();
     FakeClient.instances = [];
     FakeClient.acceptVersion = '3.3';
+    FakeClient.deadIp = undefined;
   });
   afterEach(() => { jest.useRealTimers(); });
 
