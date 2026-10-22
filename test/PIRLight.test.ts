@@ -51,40 +51,6 @@ describe('PIRLightAccessory slider echoes', () => {
   });
 });
 
-describe('PIRLightAccessory mode change', () => {
-  test('the lamp flipping its light on a mode change is kept away from HomeKit', async () => {
-    const accessory = makeAccessory(false, 'auto');
-    accessory.holdOn = false;
-    accessory.reflex = true; // going to manual, the lamp turns its light on
-    accessory.device.status[0].value = true; // the manager has already stored the pushed value
-    await accessory.onDeviceStatusUpdate([{ code: 'device_mode', value: 'manual' }, { code: 'switch_led', value: true }]);
-
-    expect(accessory.flipSeen).toBe(true);
-    expect(accessory.getStatus('switch_led').value).toBe(false); // HomeKit still sees the old light state
-    expect(accessory.updateAllValues).toHaveBeenCalled();
-  });
-
-  test('a change of the light that is not the reflex of the lamp is passed on', async () => {
-    const accessory = makeAccessory(true, 'manual');
-    accessory.holdOn = true;
-    accessory.reflex = false; // going to auto, the lamp turns its light off
-    accessory.device.status[0].value = true; // but the light is turned on by the user
-    await accessory.onDeviceStatusUpdate([{ code: 'switch_led', value: true }]);
-
-    expect(accessory.flipSeen).toBeFalsy();
-    expect(accessory.getStatus('switch_led').value).toBe(true);
-  });
-
-  test('without a mode change in progress the light state is passed on as it is', async () => {
-    const accessory = makeAccessory(false, 'manual');
-    accessory.device.status[0].value = true;
-    await accessory.onDeviceStatusUpdate([{ code: 'switch_led', value: true }]);
-
-    expect(accessory.flipSeen).toBeFalsy();
-    expect(accessory.getStatus('switch_led').value).toBe(true);
-  });
-});
-
 describe('PIRLightAccessory', () => {
   test('is used only for lamps that have an auto / manual mode', () => {
     expect(PIRLightAccessory.supports(makeLamp())).toBe(true);

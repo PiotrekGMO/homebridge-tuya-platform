@@ -13,7 +13,6 @@ const SCHEMA_CODE = {
 };
 
 const MODE_SETTLE_MS = 400;
-const FLIP_WAIT_MS = 1000;
 const ECHO_WINDOW_MS = 1500;
 
 // Values moved with a slider, whose delayed answers must not move the slider back.
@@ -36,12 +35,14 @@ export function withManualMode(commands: TuyaDeviceStatus[], currentMode?: strin
   return [{ code: 'device_mode', value: 'manual' } as TuyaDeviceStatus, ...commands];
 }
 
+/**
+ * Lamps with a motion sensor and an automatic / manual mode. The lamp itself lights up when it goes to
+ * manual and goes dark when it goes to automatic (the sensor lights it on motion), and that is what
+ * HomeKit shows.
+ */
 export default class PIRLightAccessory extends LightAccessory {
 
   private autoService?;
-  private holdOn?: boolean; // light state to keep while the mode changes
-  private flipSeen = false;
-  private reflex = false; // the light state the lamp switches to by itself on the mode change
   private sent = new Map<string, { value: TuyaDeviceStatus['value']; at: number }>(); // last slider values sent
 
   static supports(device: TuyaDevice) {
@@ -97,50 +98,11 @@ export default class PIRLightAccessory extends LightAccessory {
         if (this.getStatus(SCHEMA_CODE.MODE[0])?.value === mode) {
           return; // HomeKit often sends the same command twice
         }
-        await this.changeMode(mode);
+        await this.sendCommands([{ code: SCHEMA_CODE.MODE[0], value: mode }]);
       });
   }
 
-  /**
-   * The lamp itself turns its light on when it goes to manual and off when it goes to auto. Switching
-   * the mode must not touch the light, so the light state from before is remembered, the lamp's own
-   * change is kept away from HomeKit, and the previous state is sent back.
-   */
-  private async changeMode(mode: 'auto' | 'manual') {
-    const on = this.getStatus(SCHEMA_CODE.ON[0])?.value;
-    this.reflex = (mode === 'manual'); // the light state the lamp itself switches to
-    this.flipSeen = false;
-    // Only a light that differs from the reflex will be flipped by the lamp.
-    this.holdOn = (typeof on === 'boolean' && on !== this.reflex) ? on : undefined;
-
-    try {
-      await super.sendCommands([{ code: SCHEMA_CODE.MODE[0], value: mode }], false);
-      if (this.holdOn !== undefined) {
-        const deadline = Date.now() + FLIP_WAIT_MS;
-        while (!this.flipSeen && this.holdOn !== undefined && Date.now() < deadline) {
-          await new Promise(resolve => setTimeout(resolve, 50));
-        }
-        // A command for the light from the user (holdOn cleared) always wins over restoring the old state.
-        if (this.flipSeen && this.holdOn !== undefined) {
-          await super.sendCommands([{ code: SCHEMA_CODE.ON[0], value: this.holdOn }], false);
-          await new Promise(resolve => setTimeout(resolve, MODE_SETTLE_MS)); // let the echo pass
-        }
-      }
-    } finally {
-      this.holdOn = undefined;
-    }
-  }
-
   async onDeviceStatusUpdate(status: TuyaDeviceStatus[]) {
-    if (this.holdOn !== undefined && !this.flipSeen
-      && status.some(item => item.code === SCHEMA_CODE.ON[0] && item.value === this.reflex)) {
-      this.flipSeen = true;
-      const cached = this.device.status.find(item => item.code === SCHEMA_CODE.ON[0]);
-      if (cached) {
-        cached.value = this.holdOn; // the lamp's reflex, not a real change of the light
-      }
-    }
-
     // While the slider is being dragged the lamp answers every step with a delay, and the late answers
     // would move the slider back. Keep the value that was sent last for a moment.
     const now = Date.now();
@@ -157,9 +119,6 @@ export default class PIRLightAccessory extends LightAccessory {
   }
 
   async sendCommands(commands: TuyaDeviceStatus[], debounce?: boolean) {
-    if (commands.some(command => command.code === SCHEMA_CODE.ON[0])) {
-      this.holdOn = undefined; // the user decided about the light, do not restore anything
-    }
     for (const command of commands) {
       if (SLIDER_CODES.includes(command.code)) {
         this.sent.set(command.code, { value: command.value, at: Date.now() });
