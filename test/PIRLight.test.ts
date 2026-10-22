@@ -21,9 +21,63 @@ function makeAccessory(on: boolean, mode: string) {
   accessory.log = { debug: jest.fn() };
   accessory.updateAllValues = jest.fn();
   accessory.sent = new Map(); // field initialisers do not run on Object.create
+  accessory.ignoreLampUntil = 0;
+  accessory.saveContext = jest.fn();
+  accessory.accessory = { context: {} };
   accessory.getStatus = (code: string) => accessory.device.status.find((item: any) => item.code === code);
   return accessory;
 }
+
+describe('PIRLightAccessory manual values', () => {
+  test('the first start remembers what the lamp reports as the manual values', () => {
+    const accessory = makeAccessory(false, 'manual');
+    accessory.device.status.push({ code: 'bright_value', value: 540 }, { code: 'temp_value', value: 300 });
+    accessory.initManualValues();
+    expect(accessory.accessory.context.manual).toEqual({ bright_value: 540, temp_value: 300 });
+  });
+
+  test('in the automatic mode the slider keeps the manual value, whatever the lamp reports', async () => {
+    const accessory = makeAccessory(false, 'auto');
+    accessory.accessory.context.manual = { bright_value: 540 };
+    accessory.device.status.push({ code: 'bright_value', value: 10 }); // the manager stored the lamp's own value
+    await accessory.onDeviceStatusUpdate([{ code: 'bright_value', value: 10 }]);
+
+    expect(accessory.getStatus('bright_value').value).toBe(540);
+    expect(accessory.accessory.context.manual.bright_value).toBe(540);
+  });
+
+  test('in the manual mode the lamp\'s value becomes the remembered one', async () => {
+    const accessory = makeAccessory(true, 'manual');
+    accessory.accessory.context.manual = { bright_value: 540 };
+    accessory.device.status.push({ code: 'bright_value', value: 800 });
+    await accessory.onDeviceStatusUpdate([{ code: 'bright_value', value: 800 }]);
+
+    expect(accessory.accessory.context.manual.bright_value).toBe(800);
+    expect(accessory.saveContext).toHaveBeenCalled();
+  });
+
+  test('right after a mode change the lamp\'s own values do not replace the remembered ones', async () => {
+    const accessory = makeAccessory(true, 'manual');
+    accessory.accessory.context.manual = { bright_value: 540 };
+    accessory.ignoreLampUntil = Date.now() + 2000;
+    accessory.device.status.push({ code: 'bright_value', value: 10 });
+    await accessory.onDeviceStatusUpdate([{ code: 'bright_value', value: 10 }]);
+
+    expect(accessory.accessory.context.manual.bright_value).toBe(540);
+    expect(accessory.getStatus('bright_value').value).toBe(540);
+  });
+
+  test('leaving the automatic mode gives the lamp the remembered values, except those being set', async () => {
+    const accessory = makeAccessory(false, 'manual');
+    accessory.device.schema = [{ code: 'bright_value' }, { code: 'temp_value' }];
+    accessory.accessory.context.manual = { bright_value: 540, temp_value: 300 };
+    const send = jest.spyOn(Object.getPrototypeOf(PIRLightAccessory.prototype), 'sendCommands').mockResolvedValue(undefined as never);
+
+    await accessory.restoreManualValues([{ code: 'temp_value', value: 120 }]);
+    expect(send).toHaveBeenCalledWith([{ code: 'bright_value', value: 540 }], false);
+    send.mockRestore();
+  });
+});
 
 describe('PIRLightAccessory slider echoes', () => {
   test('a late answer with an older value does not move the slider back', async () => {

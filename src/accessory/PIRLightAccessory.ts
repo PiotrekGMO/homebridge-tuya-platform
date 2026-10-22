@@ -1,3 +1,4 @@
+import { debounce } from 'debounce';
 import TuyaDevice, { TuyaDeviceSchemaEnumProperty, TuyaDeviceSchemaType, TuyaDeviceStatus } from '../device/TuyaDevice';
 import LightAccessory from './LightAccessory';
 import { configureLight } from './characteristic/Light';
@@ -14,8 +15,10 @@ const SCHEMA_CODE = {
 
 const MODE_SETTLE_MS = 400;
 const ECHO_WINDOW_MS = 1500;
+const MODE_ECHO_MS = 2500;
 
-// Values moved with a slider, whose delayed answers must not move the slider back.
+// Values of the manual mode. The slider shows these, and they are what the lamp gets back when it
+// leaves the automatic mode, whatever the lamp itself reports while the motion sensor is in charge.
 const SLIDER_CODES = [...SCHEMA_CODE.BRIGHTNESS, ...SCHEMA_CODE.COLOR_TEMP];
 
 // Commands that only make sense when the lamp is controlled by hand.
@@ -38,12 +41,15 @@ export function withManualMode(commands: TuyaDeviceStatus[], currentMode?: strin
 /**
  * Lamps with a motion sensor and an automatic / manual mode. The lamp itself lights up when it goes to
  * manual and goes dark when it goes to automatic (the sensor lights it on motion), and that is what
- * HomeKit shows.
+ * HomeKit shows. Brightness and colour temperature always show the manual mode's values, which are
+ * remembered (also over a restart) and given back to the lamp when it returns to manual.
  */
 export default class PIRLightAccessory extends LightAccessory {
 
   private autoService?;
   private sent = new Map<string, { value: TuyaDeviceStatus['value']; at: number }>(); // last slider values sent
+  private ignoreLampUntil = 0; // the lamp's own values right after a mode change are not the manual ones
+  private saveContext = debounce(() => this.platform.api.updatePlatformAccessories([this.accessory]), 5000);
 
   static supports(device: TuyaDevice) {
     const mode = device.schema.find(schema => schema.code === SCHEMA_CODE.MODE[0]);
@@ -56,6 +62,8 @@ export default class PIRLightAccessory extends LightAccessory {
   configureServices() {
     const service = this.accessory.getService(this.Service.Lightbulb)
       || this.accessory.addService(this.Service.Lightbulb);
+
+    this.initManualValues();
 
     configureLight(
       this,
@@ -99,8 +107,67 @@ export default class PIRLightAccessory extends LightAccessory {
           return; // HomeKit often sends the same command twice
         }
         await this.sendCommands([{ code: SCHEMA_CODE.MODE[0], value: mode }]);
+        if (mode === 'manual') {
+          this.ignoreLampUntil = Date.now() + MODE_ECHO_MS;
+          await new Promise(resolve => setTimeout(resolve, MODE_SETTLE_MS));
+          await this.restoreManualValues([]);
+        }
       });
   }
+
+  // --- the values of the manual mode ---
+
+  manualValues(): Record<string, number> {
+    this.accessory.context.manual = this.accessory.context.manual ?? {};
+    return this.accessory.context.manual;
+  }
+
+  remember(code: string, value: TuyaDeviceStatus['value']) {
+    if (typeof value === 'number' && this.manualValues()[code] !== value) {
+      this.manualValues()[code] = value;
+      this.saveContext();
+    }
+  }
+
+  private isAuto() {
+    return this.getStatus(SCHEMA_CODE.MODE[0])?.value === 'auto';
+  }
+
+  /** The first start: what the lamp reports is the best guess, after that the remembered values rule. */
+  initManualValues() {
+    for (const status of this.device.status) {
+      if (SLIDER_CODES.includes(status.code) && this.manualValues()[status.code] === undefined) {
+        this.remember(status.code, status.value);
+      }
+    }
+    this.showManualValues();
+  }
+
+  /** In the automatic mode the cache, and so HomeKit, keeps the manual values instead of the lamp's own. */
+  showManualValues() {
+    if (!this.isAuto()) {
+      return;
+    }
+    for (const [code, value] of Object.entries(this.manualValues())) {
+      const cached = this.device.status.find(item => item.code === code);
+      if (cached) {
+        cached.value = value;
+      }
+    }
+  }
+
+  /** Gives the manual values back to the lamp, except those the user is setting right now. */
+  async restoreManualValues(userCommands: TuyaDeviceStatus[]) {
+    const own = new Set(userCommands.map(command => command.code));
+    const restore = Object.entries(this.manualValues())
+      .filter(([code]) => !own.has(code) && this.device.schema.some(schema => schema.code === code))
+      .map(([code, value]) => ({ code, value } as TuyaDeviceStatus));
+    if (restore.length > 0) {
+      await super.sendCommands(restore, false);
+    }
+  }
+
+  // --- status and commands ---
 
   async onDeviceStatusUpdate(status: TuyaDeviceStatus[]) {
     // While the slider is being dragged the lamp answers every step with a delay, and the late answers
@@ -115,6 +182,25 @@ export default class PIRLightAccessory extends LightAccessory {
         }
       }
     }
+
+    // What the lamp reports for brightness and colour temperature counts as the manual mode's value only
+    // while the lamp is in the manual mode, and not right after a mode change.
+    if (this.isAuto()) {
+      this.showManualValues();
+    } else if (now >= this.ignoreLampUntil) {
+      for (const item of status) {
+        if (SLIDER_CODES.includes(item.code)) {
+          this.remember(item.code, this.device.status.find(entry => entry.code === item.code)?.value ?? item.value);
+        }
+      }
+    } else {
+      for (const [code, value] of Object.entries(this.manualValues())) {
+        const cached = this.device.status.find(entry => entry.code === code);
+        if (cached) {
+          cached.value = value;
+        }
+      }
+    }
     return super.onDeviceStatusUpdate(status);
   }
 
@@ -122,6 +208,7 @@ export default class PIRLightAccessory extends LightAccessory {
     for (const command of commands) {
       if (SLIDER_CODES.includes(command.code)) {
         this.sent.set(command.code, { value: command.value, at: Date.now() });
+        this.remember(command.code, command.value);
       }
     }
 
@@ -131,10 +218,13 @@ export default class PIRLightAccessory extends LightAccessory {
     }
 
     // The lamp applies data points in numeric order, so a mode change sent together with the light
-    // would land last and reset it. Switch to manual first, let it settle, then send the light.
+    // would land last and reset it. Switch to manual first, let it settle, give the lamp its manual
+    // values back, then send the light.
+    this.ignoreLampUntil = Date.now() + MODE_ECHO_MS;
     await super.sendCommands([forced[0]], false);
     this.autoService?.getCharacteristic(this.Characteristic.On).updateValue(false);
     await new Promise(resolve => setTimeout(resolve, MODE_SETTLE_MS));
+    await this.restoreManualValues(commands);
     return super.sendCommands(commands, debounce);
   }
 
