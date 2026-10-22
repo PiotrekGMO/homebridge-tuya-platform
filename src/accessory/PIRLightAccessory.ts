@@ -15,6 +15,7 @@ const SCHEMA_CODE = {
 };
 
 const MODE_SETTLE_MS = 400;
+const FLIP_WAIT_MS = 1500;
 
 // Commands that only make sense when the lamp is controlled by hand.
 const MANUAL_CODES = [
@@ -36,6 +37,8 @@ export function withManualMode(commands: TuyaDeviceStatus[], currentMode?: strin
 export default class PIRLightAccessory extends LightAccessory {
 
   private autoService?;
+  private holdOn?: boolean; // light state to keep while the mode changes
+  private flipSeen = false;
 
   static supports(device: TuyaDevice) {
     const mode = device.schema.find(schema => schema.code === SCHEMA_CODE.MODE[0]);
@@ -82,8 +85,50 @@ export default class PIRLightAccessory extends LightAccessory {
         return this.getStatus(SCHEMA_CODE.MODE[0])?.value === 'auto';
       })
       .onSet(async value => {
-        await this.sendCommands([{ code: SCHEMA_CODE.MODE[0], value: value ? 'auto' : 'manual' }]);
+        const mode = value ? 'auto' : 'manual';
+        if (this.getStatus(SCHEMA_CODE.MODE[0])?.value === mode) {
+          return; // HomeKit often sends the same command twice
+        }
+        await this.changeMode(mode);
       });
+  }
+
+  /**
+   * The lamp itself turns its light on when it goes to manual and off when it goes to auto. Switching
+   * the mode must not touch the light, so the light state from before is remembered, the lamp's own
+   * change is kept away from HomeKit, and the previous state is sent back.
+   */
+  private async changeMode(mode: 'auto' | 'manual') {
+    const on = this.getStatus(SCHEMA_CODE.ON[0])?.value;
+    this.holdOn = typeof on === 'boolean' ? on : undefined;
+    this.flipSeen = false;
+
+    try {
+      await super.sendCommands([{ code: SCHEMA_CODE.MODE[0], value: mode }], false);
+      if (this.holdOn !== undefined) {
+        const deadline = Date.now() + FLIP_WAIT_MS;
+        while (!this.flipSeen && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        if (this.flipSeen) {
+          await super.sendCommands([{ code: SCHEMA_CODE.ON[0], value: this.holdOn }], false);
+          await new Promise(resolve => setTimeout(resolve, MODE_SETTLE_MS)); // let the echo pass
+        }
+      }
+    } finally {
+      this.holdOn = undefined;
+    }
+  }
+
+  async onDeviceStatusUpdate(status: TuyaDeviceStatus[]) {
+    if (this.holdOn !== undefined && status.some(item => item.code === SCHEMA_CODE.ON[0] && item.value !== this.holdOn)) {
+      this.flipSeen = true;
+      const cached = this.device.status.find(item => item.code === SCHEMA_CODE.ON[0]);
+      if (cached) {
+        cached.value = this.holdOn; // the lamp's reflex, not a real change of the light
+      }
+    }
+    return super.onDeviceStatusUpdate(status);
   }
 
   async sendCommands(commands: TuyaDeviceStatus[], debounce?: boolean) {

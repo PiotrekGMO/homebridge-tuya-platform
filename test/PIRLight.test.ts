@@ -1,4 +1,4 @@
-import { describe, expect, test } from '@jest/globals';
+import { describe, expect, jest, test } from '@jest/globals';
 import TuyaDevice, { TuyaDeviceSchemaMode, TuyaDeviceSchemaType } from '../src/device/TuyaDevice';
 import PIRLightAccessory, { withManualMode } from '../src/accessory/PIRLightAccessory';
 
@@ -14,6 +14,38 @@ function makeLamp(withMode = true) {
     ],
   });
 }
+
+function makeAccessory(on: boolean, mode: string) {
+  const accessory: any = Object.create(PIRLightAccessory.prototype);
+  accessory.device = { status: [{ code: 'switch_led', value: on }, { code: 'device_mode', value: mode }] };
+  accessory.log = { debug: jest.fn() };
+  accessory.updateAllValues = jest.fn();
+  accessory.getStatus = (code: string) => accessory.device.status.find((item: any) => item.code === code);
+  return accessory;
+}
+
+describe('PIRLightAccessory mode change', () => {
+  test('the lamp flipping its light on a mode change is kept away from HomeKit', async () => {
+    const accessory = makeAccessory(false, 'auto');
+    accessory.holdOn = false;
+    // the lamp turns its light on when it goes to manual
+    accessory.device.status[0].value = true; // the manager has already stored the pushed value
+    await accessory.onDeviceStatusUpdate([{ code: 'device_mode', value: 'manual' }, { code: 'switch_led', value: true }]);
+
+    expect(accessory.flipSeen).toBe(true);
+    expect(accessory.getStatus('switch_led').value).toBe(false); // HomeKit still sees the old light state
+    expect(accessory.updateAllValues).toHaveBeenCalled();
+  });
+
+  test('without a mode change in progress the light state is passed on as it is', async () => {
+    const accessory = makeAccessory(false, 'manual');
+    accessory.device.status[0].value = true;
+    await accessory.onDeviceStatusUpdate([{ code: 'switch_led', value: true }]);
+
+    expect(accessory.flipSeen).toBeFalsy();
+    expect(accessory.getStatus('switch_led').value).toBe(true);
+  });
+});
 
 describe('PIRLightAccessory', () => {
   test('is used only for lamps that have an auto / manual mode', () => {
