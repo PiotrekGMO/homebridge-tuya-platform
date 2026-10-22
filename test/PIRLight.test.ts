@@ -20,9 +20,36 @@ function makeAccessory(on: boolean, mode: string) {
   accessory.device = { status: [{ code: 'switch_led', value: on }, { code: 'device_mode', value: mode }] };
   accessory.log = { debug: jest.fn() };
   accessory.updateAllValues = jest.fn();
+  accessory.sent = new Map(); // field initialisers do not run on Object.create
   accessory.getStatus = (code: string) => accessory.device.status.find((item: any) => item.code === code);
   return accessory;
 }
+
+describe('PIRLightAccessory slider echoes', () => {
+  test('a late answer with an older value does not move the slider back', async () => {
+    const accessory = makeAccessory(true, 'manual');
+    accessory.device.status.push({ code: 'bright_value', value: 520 });
+    accessory.sent = new Map([['bright_value', { value: 540, at: Date.now() }]]);
+    // the lamp answers an earlier step of the drag, the manager already stored it
+    accessory.device.status.find((item: any) => item.code === 'bright_value').value = 490;
+    await accessory.onDeviceStatusUpdate([{ code: 'bright_value', value: 490 }]);
+
+    expect(accessory.getStatus('bright_value').value).toBe(540);
+  });
+
+  test('the answer for the last value, and later changes by the lamp itself, are passed on', async () => {
+    const accessory = makeAccessory(true, 'manual');
+    accessory.device.status.push({ code: 'bright_value', value: 540 });
+    accessory.sent = new Map([['bright_value', { value: 540, at: Date.now() }]]);
+    await accessory.onDeviceStatusUpdate([{ code: 'bright_value', value: 540 }]);
+    expect(accessory.getStatus('bright_value').value).toBe(540);
+
+    accessory.sent = new Map([['bright_value', { value: 540, at: Date.now() - 5000 }]]);
+    accessory.device.status.find((item: any) => item.code === 'bright_value').value = 100;
+    await accessory.onDeviceStatusUpdate([{ code: 'bright_value', value: 100 }]);
+    expect(accessory.getStatus('bright_value').value).toBe(100);
+  });
+});
 
 describe('PIRLightAccessory mode change', () => {
   test('the lamp flipping its light on a mode change is kept away from HomeKit', async () => {

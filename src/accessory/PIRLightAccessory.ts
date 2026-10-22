@@ -14,6 +14,10 @@ const SCHEMA_CODE = {
 
 const MODE_SETTLE_MS = 400;
 const FLIP_WAIT_MS = 1000;
+const ECHO_WINDOW_MS = 1500;
+
+// Values moved with a slider, whose delayed answers must not move the slider back.
+const SLIDER_CODES = [...SCHEMA_CODE.BRIGHTNESS, ...SCHEMA_CODE.COLOR_TEMP];
 
 // Commands that only make sense when the lamp is controlled by hand.
 const MANUAL_CODES = [
@@ -38,6 +42,7 @@ export default class PIRLightAccessory extends LightAccessory {
   private holdOn?: boolean; // light state to keep while the mode changes
   private flipSeen = false;
   private reflex = false; // the light state the lamp switches to by itself on the mode change
+  private sent = new Map<string, { value: TuyaDeviceStatus['value']; at: number }>(); // last slider values sent
 
   static supports(device: TuyaDevice) {
     const mode = device.schema.find(schema => schema.code === SCHEMA_CODE.MODE[0]);
@@ -135,12 +140,30 @@ export default class PIRLightAccessory extends LightAccessory {
         cached.value = this.holdOn; // the lamp's reflex, not a real change of the light
       }
     }
+
+    // While the slider is being dragged the lamp answers every step with a delay, and the late answers
+    // would move the slider back. Keep the value that was sent last for a moment.
+    const now = Date.now();
+    for (const item of status) {
+      const sent = this.sent.get(item.code);
+      if (sent && now - sent.at < ECHO_WINDOW_MS && item.value !== sent.value) {
+        const cached = this.device.status.find(entry => entry.code === item.code);
+        if (cached) {
+          cached.value = sent.value;
+        }
+      }
+    }
     return super.onDeviceStatusUpdate(status);
   }
 
   async sendCommands(commands: TuyaDeviceStatus[], debounce?: boolean) {
     if (commands.some(command => command.code === SCHEMA_CODE.ON[0])) {
       this.holdOn = undefined; // the user decided about the light, do not restore anything
+    }
+    for (const command of commands) {
+      if (SLIDER_CODES.includes(command.code)) {
+        this.sent.set(command.code, { value: command.value, at: Date.now() });
+      }
     }
 
     const forced = withManualMode(commands, this.getStatus(SCHEMA_CODE.MODE[0])?.value);
