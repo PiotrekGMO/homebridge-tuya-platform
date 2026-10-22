@@ -1,5 +1,6 @@
 import { Service } from 'homebridge';
 import { TuyaDeviceSchema, TuyaDeviceSchemaEnumProperty, TuyaDeviceSchemaIntegerProperty, TuyaDeviceStatus } from '../../device/TuyaDevice';
+import { decodeLocalValue } from '../../device/TuyaLocalValues';
 import { kelvinToHSV, kelvinToMired, miredToKelvin } from '../../util/color';
 import { limit, remap } from '../../util/util';
 import BaseAccessory from '../BaseAccessory';
@@ -60,12 +61,18 @@ function getColorValue(accessory: BaseAccessory, schema: TuyaDeviceSchema) {
     return { h: 0, s: 0, v: 0 };
   }
 
-  const { h, s, v } = JSON.parse(status.value as string);
-  return {
-    h: h as number,
-    s: s as number,
-    v: v as number,
-  };
+  // A value in the device's own form (hex) is translated first; anything unreadable counts as "no colour"
+  // instead of making every read of Brightness, Hue and Saturation fail.
+  try {
+    const { h, s, v } = JSON.parse(decodeLocalValue(schema, status.value) as string);
+    return {
+      h: (typeof h === 'number' ? h : 0),
+      s: (typeof s === 'number' ? s : 0),
+      v: (typeof v === 'number' ? v : 0),
+    };
+  } catch (error) {
+    return { h: 0, s: 0, v: 0 };
+  }
 }
 
 function inWhiteMode(

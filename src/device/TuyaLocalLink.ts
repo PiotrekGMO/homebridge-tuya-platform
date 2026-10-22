@@ -2,6 +2,7 @@ import EventEmitter from 'events';
 import TuyaLocalConnection, { TuyaLocalClientFactory, TuyaLocalDps } from '../core/TuyaLocal';
 import Logger from '../util/Logger';
 import TuyaDevice, { TuyaDeviceSchema, TuyaDeviceSchemaType, TuyaDeviceStatus } from './TuyaDevice';
+import { decodeLocalValue, encodeLocalValue } from './TuyaLocalValues';
 
 export interface TuyaLocalRegistration {
   key: string;
@@ -124,7 +125,7 @@ export default class TuyaLocalLink extends EventEmitter {
         this.log.debug('No dp_id for code %s of %s, cannot send locally.', code, device.name);
         return undefined;
       }
-      dps[String(schema.dp_id)] = value;
+      dps[String(schema.dp_id)] = encodeLocalValue(schema, value);
     }
     return dps;
   }
@@ -137,7 +138,7 @@ export default class TuyaLocalLink extends EventEmitter {
         this.log.debug('Unknown dp %s=%o for %s.', dpId, value, device.name);
         continue;
       }
-      status.push({ code: schema.code, value });
+      status.push({ code: schema.code, value: decodeLocalValue(schema, value) });
     }
     return status;
   }
