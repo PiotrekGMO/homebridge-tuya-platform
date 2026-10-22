@@ -36,6 +36,8 @@ export const LOGIN_ERROR_MESSAGES = {
   2406: 'Please make sure you selected the right data center where your app account located, and the app account is linked with cloud project.',
 };
 
+const RELOGIN_MIN_INTERVAL = 2 * 60 * 1000;
+
 const API_NOT_SUBSCRIBED_ERROR = `
 API not subscribed. Please go to "Tuya IoT Platform -> Cloud -> Development -> Project -> Service API",
 and Authorize the following APIs before using:
@@ -79,6 +81,12 @@ export default class TuyaOpenAPI {
   public deviceArr: Array<object> = [];
 
   public tokenInfo = { access_token: '', refresh_token: '', uid: '', expire: 0 };
+
+  // Repeats the last login when the token can no longer be refreshed (e.g. another session took it, code 1010).
+  private reloginFn?: () => Promise<TuyaOpenAPIResponse>;
+  private reloginPromise?: Promise<void>;
+  private lastRelogin = 0;
+  public onRelogin?: () => void;
 
   constructor(
     public endpoint: Endpoints | string,
@@ -133,6 +141,7 @@ export default class TuyaOpenAPI {
     const res = await this.get(`/v1.0/token/${this.tokenInfo.refresh_token}`);
     if (res.success === false) {
       this.log.error('Refresh access_token failed. code = %s, msg = %s', res.code, res.msg);
+      await this.relogin();
       return;
     }
 
@@ -144,6 +153,38 @@ export default class TuyaOpenAPI {
       expire: expire_time * 1000 + new Date().getTime(),
     };
 
+  }
+
+  /**
+   * Log in again with the credentials of the last login. At most once every 2 minutes, and a single
+   * login at a time, so two Homebridge instances sharing an account do not fight over the token.
+   */
+  async relogin() {
+    if (!this.reloginFn) {
+      return;
+    }
+    if (this.reloginPromise) {
+      return this.reloginPromise;
+    }
+    if (Date.now() - this.lastRelogin < RELOGIN_MIN_INTERVAL) {
+      return;
+    }
+
+    this.lastRelogin = Date.now();
+    const login = this.reloginFn;
+    this.reloginPromise = (async () => {
+      this.log.warn('Token is no longer valid, logging in again.');
+      const res = await login();
+      if (res.success === false) {
+        this.log.error('Login again failed. code = %s, msg = %s', res.code, res.msg);
+        return;
+      }
+      this.log.info('Logged in again.');
+      this.onRelogin?.();
+    })().finally(() => {
+      this.reloginPromise = undefined;
+    });
+    return this.reloginPromise;
   }
 
   /**
@@ -175,6 +216,9 @@ export default class TuyaOpenAPI {
    * @returns
    */
   async homeLogin(countryCode: number, username: string, password: string, appSchema: string) {
+
+    const originalPassword = password; // `password` is replaced by its hash below
+    this.reloginFn = () => this.homeLogin(countryCode, username, originalPassword, appSchema);
 
     if (this._isSaltedPassword(password)) {
       this.log.info('Login with md5 salted password.');
@@ -239,6 +283,7 @@ export default class TuyaOpenAPI {
    * @returns
    */
   async customLogin(username: string, password: string) {
+    this.reloginFn = () => this.customLogin(username, password);
     this.tokenInfo = { access_token: '', refresh_token: '', uid: '', expire: 0 };
     const res = await this.post('/v1.0/iot-03/users/login', {
       username: username,
