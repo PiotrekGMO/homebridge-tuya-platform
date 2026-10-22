@@ -1,7 +1,6 @@
 import TuyaDevice, { TuyaDeviceSchemaEnumProperty, TuyaDeviceSchemaType, TuyaDeviceStatus } from '../device/TuyaDevice';
 import LightAccessory from './LightAccessory';
 import { configureLight } from './characteristic/Light';
-import { configureMotionDetected } from './characteristic/MotionDetected';
 import { configureName } from './characteristic/Name';
 
 const SCHEMA_CODE = {
@@ -10,7 +9,6 @@ const SCHEMA_CODE = {
   COLOR_TEMP: ['temp_value', 'temp_value_v2'],
   COLOR: ['colour_data', 'colour_data_v2'],
   WORK_MODE: ['work_mode'],
-  PIR: ['pir_state'],
   MODE: ['device_mode'],
 };
 
@@ -63,7 +61,11 @@ export default class PIRLightAccessory extends LightAccessory {
       this.getSchema(...SCHEMA_CODE.WORK_MODE),
     );
 
-    configureMotionDetected(this, undefined, this.getSchema(...SCHEMA_CODE.PIR));
+    // The radar as a motion sensor only clutters the lamp, the automatic mode has its own switch.
+    const motion = this.accessory.getService(this.Service.MotionSensor);
+    if (motion) {
+      this.accessory.removeService(motion);
+    }
 
     // An earlier version exposed the raw PIR on/off data point as an unnamed switch.
     const oldSwitch = this.accessory.getService('switch_pir');
