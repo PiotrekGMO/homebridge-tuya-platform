@@ -5,6 +5,11 @@ import TuyaOpenAPI from '../src/core/TuyaOpenAPI';
 import TuyaDevice from '../src/device/TuyaDevice';
 import TuyaHomeDeviceManager from '../src/device/TuyaHomeDeviceManager';
 import IRBlindsAccessory from '../src/accessory/IRBlindsAccessory';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import TuyaLocalDeviceManager from '../src/device/TuyaLocalDeviceManager';
+import { loadSnapshot, saveSnapshot } from '../src/device/TuyaLocalSnapshot';
 
 const log = { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() } as any;
 
@@ -191,5 +196,66 @@ describe('RF remotes on an IR+RF hub', () => {
       remote_keys: { ...devices[1].remote_keys!, key_list: devices[1].remote_keys!.key_list.filter(key => key.key !== 'power_off') },
     } as any);
     expect(IRBlindsAccessory.supports(noClose)).toBe(false);
+  });
+});
+
+describe('RF remotes without the cloud', () => {
+  const learned = (key: string) => JSON.stringify({ rf_type: 'sub_2g', key1: { code: key } });
+
+  function snapshotDevices() {
+    const hub = new TuyaDevice({
+      id: HUB, name: 'Hub', category: 'hidden', original_category: 'wnykq', local_key: '0123456789abcdef',
+      status: [], schema: [], sub: false, local: { ip: '192.168.1.142', version: '3.3' },
+    } as any);
+    const shutters = new TuyaDevice({
+      id: SHUTTERS, name: 'Shutters', category: 'rf_venetian_blind', sub: true, parent_id: HUB, status: [], schema: [],
+      remote_keys: {
+        category_id: 11, brand_id: 0, remote_index: 1, single_air: false, duplicate_power: false,
+        key_list: [
+          { key: 'power_on', key_id: 1, key_name: 'on', standard_key: false, learning_code: learned('c1') },
+          { key: 'power_off', key_id: 2, key_name: 'off', standard_key: false, learning_code: learned('c2') },
+        ],
+      },
+    } as any);
+    return [hub, shutters];
+  }
+
+  test('the remote is kept in the snapshot with its learned codes, a device without a key and a scene are not', async () => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tuya-rf-'));
+    const file = path.join(dir, 'TuyaLocalSnapshot.json');
+    const scene = new TuyaDevice({ id: 's1', name: 'Scene', category: 'scene', status: [], schema: [], sub: false } as any);
+    await saveSnapshot(file, [...snapshotDevices(), scene]);
+
+    const loaded = await loadSnapshot(file);
+    expect(loaded.map(device => device.id).sort()).toEqual([HUB, SHUTTERS].sort());
+    const remote = loaded.find(device => device.id === SHUTTERS)!;
+    expect(remote.parent_id).toBe(HUB);
+    expect(remote.remote_keys?.key_list[0].learning_code).toBe(learned('c1'));
+    expect(loaded.find(device => device.id === HUB)!.isIRControlHub()).toBe(true); // also while it is hidden
+    await fs.promises.rm(dir, { recursive: true });
+  });
+
+  test('without the cloud the shutters are rebuilt from the snapshot and the key goes over LAN through the hub', async () => {
+    const manager = new TuyaLocalDeviceManager(log);
+    await manager.updateDevices(snapshotDevices());
+
+    const shutters = manager.getDevice(SHUTTERS)!;
+    expect(shutters.isRFRemoteControl()).toBe(true);
+    expect(shutters.online).toBe(true);
+
+    const writes: any[] = [];
+    const factory = () => {
+      const client = new EventEmitter() as any;
+      client.connect = jest.fn(async () => true);
+      client.set = jest.fn(async (arg: any) => { writes.push(arg); return {}; });
+      client.disconnect = jest.fn();
+      return client;
+    };
+    manager.enableLocal(manager.devices, {}, factory as any);
+
+    const res = await manager.sendInfraredKey(shutters, shutters.remote_keys!.key_list[1]);
+    expect(res.success).toBe(true);
+    expect(JSON.parse(writes[0].data['201'])).toMatchObject({ control: 'rfstudy_send', ver: '2', key1: { code: 'c2', ver: '2' } });
+    manager.local!.stop();
   });
 });

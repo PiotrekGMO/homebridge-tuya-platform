@@ -4,6 +4,7 @@ import Logger from '../util/Logger';
 import TuyaDevice, { TuyaDeviceSchema, TuyaDeviceSchemaMode, TuyaDeviceSchemaType, TuyaDeviceStatus } from './TuyaDevice';
 import TuyaDeviceManager from './TuyaDeviceManager';
 import { defaultStatusValue } from './TuyaLocalLink';
+import { isHubRemote } from './TuyaLocalSnapshot';
 
 /**
  * Device manager that never talks to the Tuya cloud. Devices come from the local snapshot
@@ -28,7 +29,9 @@ export default class TuyaLocalDeviceManager extends TuyaDeviceManager {
     }
 
     for (const device of devices.values()) {
-      device.online = false; // until the LAN connection is up
+      // Until the LAN connection is up. A remote of a hub has no connection of its own, the hub is
+      // contacted when a key is sent.
+      device.online = isHubRemote(device);
       this.fillMissingStatus(device);
     }
 

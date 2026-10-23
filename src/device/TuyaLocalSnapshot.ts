@@ -22,6 +22,16 @@ export function isLocalCapable(device: TuyaDevice) {
   return !!device.local_key && !device.sub && !device.parent_id && device.category !== 'scene';
 }
 
+/** An RF / IR remote learned on a hub: it has no key of its own, it is operated through the hub. */
+export function isHubRemote(device: TuyaDevice) {
+  return !!device.parent_id && device.remote_keys !== undefined;
+}
+
+/** What the cloud-less mode needs: devices reachable over LAN and the remotes of the hubs. */
+export function isSnapshotDevice(device: TuyaDevice) {
+  return isLocalCapable(device) || isHubRemote(device);
+}
+
 export async function loadSnapshot(file: string): Promise<TuyaDevice[]> {
   try {
     const data = JSON.parse(await fs.promises.readFile(file, 'utf8')) as SnapshotFile;
@@ -36,7 +46,7 @@ export async function loadSnapshot(file: string): Promise<TuyaDevice[]> {
 
 /** Fresh cloud data wins, but information the cloud did not provide this time is kept. */
 export function mergeSnapshot(previous: TuyaDevice[], fresh: TuyaDevice[]): TuyaDevice[] {
-  return fresh.filter(isLocalCapable).map(device => {
+  return fresh.filter(isSnapshotDevice).map(device => {
     const old = previous.find(item => item.id === device.id);
     if (!old) {
       return device;

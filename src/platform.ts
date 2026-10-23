@@ -8,7 +8,7 @@ import TuyaDeviceManager from './device/TuyaDeviceManager';
 import TuyaCustomDeviceManager from './device/TuyaCustomDeviceManager';
 import TuyaHomeDeviceManager from './device/TuyaHomeDeviceManager';
 import TuyaLocalDeviceManager from './device/TuyaLocalDeviceManager';
-import { isLocalCapable, loadSnapshot, saveSnapshot, snapshotPath } from './device/TuyaLocalSnapshot';
+import { isSnapshotDevice, loadSnapshot, saveSnapshot, snapshotPath } from './device/TuyaLocalSnapshot';
 import { debounce } from 'debounce';
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
@@ -16,6 +16,7 @@ import { TuyaPlatformConfigOptions, customOptionsSchema, homeOptionsSchema, loca
 import AccessoryFactory from './accessory/AccessoryFactory';
 import BaseAccessory from './accessory/BaseAccessory';
 import TuyaOpenAPI, { LOGIN_ERROR_MESSAGES } from './core/TuyaOpenAPI';
+import { canConnect } from './util/network';
 
 
 /**
@@ -157,8 +158,18 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
 
     let devices: TuyaDevice[] | undefined;
     const localEnabled = this.options.projectType === '3' || this.options.local?.enabled === true;
+
+    // Logging in to an unreachable cloud is retried for minutes. With a local snapshot to fall back on
+    // there is no reason to wait for that.
+    const cloudDown = localEnabled && this.options.projectType !== '3' && !(await canConnect(this.getCloudEndpoint()));
+    if (cloudDown) {
+      this.log.warn('The Tuya cloud cannot be reached.');
+    }
+
     try {
-      if (this.options.projectType === '1') {
+      if (cloudDown) {
+        devices = undefined;
+      } else if (this.options.projectType === '1') {
         devices = await this.initCustomProject();
       } else if (this.options.projectType === '2') {
         devices = await this.initHomeProject();
@@ -262,6 +273,18 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
 
   }
 
+  getCloudEndpoint() {
+    if (this.options.projectType === '1') {
+      return this.options.endpoint;
+    }
+    if (this.options.projectType === '2') {
+      return (this.options.endpoint && this.options.endpoint.length > 0)
+        ? this.options.endpoint
+        : TuyaOpenAPI.getDefaultEndpoint(this.options.countryCode);
+    }
+    return '';
+  }
+
   getSnapshotFile() {
     return snapshotPath(this.api.user.persistPath());
   }
@@ -278,7 +301,7 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
 
   /** Runs without the Tuya cloud: devices come from the snapshot of the last cloud sync and `localDevices`. */
   async initLocalProject() {
-    const snapshot = (await loadSnapshot(this.getSnapshotFile())).filter(isLocalCapable);
+    const snapshot = (await loadSnapshot(this.getSnapshotFile())).filter(isSnapshotDevice);
     const localDevices = this.options.localDevices ?? [];
     if (snapshot.length === 0 && localDevices.length === 0) {
       this.log.error('No local snapshot and no "localDevices" configured, nothing to run. ' +
