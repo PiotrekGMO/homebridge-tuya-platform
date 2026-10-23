@@ -25,7 +25,7 @@ function devices() {
     schema: [{ code: 'switch_1', dp_id: 1, mode: 'rw', type: 'Boolean', property: {} }],
   } as any);
   const hub = new TuyaDevice({
-    id: HUB, uuid: HUB, name: 'Hub', category: 'wnykq', product_id: 'hubp', online: true, sub: false,
+    id: HUB, uuid: HUB, name: 'Hub', category: 'hidden', original_category: 'wnykq', product_id: 'hubp', online: true, sub: false,
     local_key: 'fedcba9876543210', local: { ip: '127.0.0.1', version: '3.3' }, status: [], schema: [],
   } as any);
   const shutters = new TuyaDevice({
@@ -75,6 +75,7 @@ describe('start without the Tuya cloud', () => {
     const shutters = manager.getDevice('rf1')!;
     expect(shutters.isRFRemoteControl()).toBe(true);
     expect(manager.getDevice(HUB)!.isIRControlHub()).toBe(true);
+    expect((manager.local as any).entries.get(HUB).persistent).toBe(false); // contacted only when a key is sent
     expect(manager.local!.has(HUB)).toBe(true); // reachable for the key
 
     manager.local!.stop();

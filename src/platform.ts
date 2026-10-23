@@ -204,7 +204,7 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
         continue;
       }
       this.log.warn('Override %o category from %o to %o', device.name, device.category, deviceConfig.category);
-      device.original_category = device.category;
+      device.original_category = device.original_category ?? device.category; // a snapshot already knows the real one
       device.category = deviceConfig.category;
     }
     // override device bridged
