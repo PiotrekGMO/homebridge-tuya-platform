@@ -186,6 +186,9 @@ export default class TuyaLocalConnection extends EventEmitter {
     try {
       await withTimeout(client.connect(), CONNECT_TIMEOUT);
       const status = await withTimeout(client.get({ schema: true }), CONNECT_TIMEOUT);
+      if (!status || typeof status !== 'object' || !(status as { dps?: unknown }).dps) {
+        throw new Error('no data points in the answer (another device or a wrong key)');
+      }
       if (this.client !== client) {
         return; // stopped or replaced while connecting
       }

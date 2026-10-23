@@ -12,6 +12,7 @@ export interface TuyaLocalRegistration {
   // false: connect only for the moment of a write (IR/RF hubs, which allow a single connection)
   persistent?: boolean;
   ipFixed?: boolean; // the address was configured by hand, never forget it
+  scan?: boolean; // look for the device among the hosts of the network when the UDP lookup finds nothing (default)
 }
 
 /**
@@ -42,7 +43,7 @@ export default class TuyaLocalLink extends EventEmitter {
       ip: registration.ip,
       ipFixed: registration.ipFixed,
       version: registration.version,
-      candidates: this.factory ? undefined : () => this.lanCandidates(device.id),
+      candidates: this.factory || registration.scan === false ? undefined : () => this.lanCandidates(device.id),
     }, this.log, this.factory);
 
     connection.on('status', dps => this.onDps(device, dps));

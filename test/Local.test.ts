@@ -198,6 +198,22 @@ describe('TuyaLocalConnection', () => {
     connection.stop();
   });
 
+  test('an answer without data points is not a connection', async () => {
+    const odd = (options: any) => {
+      const client = new FakeClient(options);
+      client.get = (async () => 'json obj data unvalid') as any;
+      return client as unknown as TuyaLocalClient;
+    };
+    const connection = new TuyaLocalConnection({ id: 'dev1', key: 'k', ip: '192.168.1.114', version: '3.3' }, log, odd);
+    const ip = jest.fn();
+    connection.on('ip', ip);
+    connection.start();
+    await flush();
+    expect(connection.connected).toBe(false);
+    expect(ip).not.toHaveBeenCalled();
+    connection.stop();
+  });
+
   test('keeps an address that was configured by hand', async () => {
     FakeClient.deadIp = '192.168.1.9';
     const connection = new TuyaLocalConnection({ id: 'dev1', key: 'k', ip: '192.168.1.9', ipFixed: true, version: '3.3' }, log, factory);
