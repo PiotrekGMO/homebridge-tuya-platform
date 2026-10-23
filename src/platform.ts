@@ -257,6 +257,9 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
       });
     }
 
+    // Cloud-only devices (battery sensors): ask for their current values now and then, in case a notification is missed.
+    this.deviceManager!.startCloudRefresh(this.options.refreshMinutes ?? 10);
+
   }
 
   getSnapshotFile() {

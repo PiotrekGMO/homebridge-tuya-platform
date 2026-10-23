@@ -67,6 +67,13 @@
                             "functionBody": "return model.options.projectType !== '3';"
                         }
                     },
+                    "refreshMinutes": {
+                        "title": "Refresh cloud-only devices (minutes)",
+                        "description": "How often devices that are not reachable over LAN (battery sensors) are asked for their current values, in case a cloud notification is missed. 0 turns it off.",
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 10
+                    },
                     "local": {
                         "title": "Local (LAN) Control",
                         "type": "object",

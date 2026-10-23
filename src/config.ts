@@ -41,6 +41,7 @@ export interface TuyaPlatformLocalDeviceConfig {
 }
 
 export interface TuyaPlatformLocalOptions {
+  refreshMinutes?: number; // how often cloud-only devices are asked for their values, 0 = never (default 10)
   local?: TuyaPlatformLocalConfig;
   localDevices?: Array<TuyaPlatformLocalDeviceConfig>;
 }

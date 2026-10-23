@@ -39,6 +39,7 @@ export default class TuyaDeviceManager extends EventEmitter {
   // false when running without the Tuya cloud (local-only mode)
   public cloud = true;
   public local?: TuyaLocalLink;
+  private refreshTimer?: NodeJS.Timeout;
 
   constructor(
     public api: TuyaOpenAPI,
@@ -90,6 +91,58 @@ export default class TuyaDeviceManager extends EventEmitter {
     link.start();
   }
 
+  /**
+   * Devices that are not reachable over LAN (battery sensors) only get their values through the cloud
+   * notifications. When one does not arrive, the value would stay as it is until a restart, so the
+   * current values are also asked for from time to time.
+   */
+  startCloudRefresh(minutes = 10) {
+    if (!this.cloud || minutes <= 0) {
+      return;
+    }
+    this.refreshTimer?.unref?.();
+    clearInterval(this.refreshTimer);
+    this.refreshTimer = setInterval(() => void this.refreshFromCloud(), minutes * 60 * 1000);
+    this.refreshTimer.unref?.();
+  }
+
+  stopCloudRefresh() {
+    clearInterval(this.refreshTimer);
+    this.refreshTimer = undefined;
+  }
+
+  async refreshFromCloud() {
+    for (const device of this.devices) {
+      if (device.sub || device.parent_id || device.category === 'scene' || device.isIRControlHub()
+        || this.local?.isConnected(device.id) || device.status.length === 0) {
+        continue;
+      }
+
+      try {
+        const res = await this.api.get(`/v2.0/cloud/thing/${device.id}/shadow/properties`);
+        if (res.success === false) {
+          this.log.debug('Refresh of %s failed. code = %s, msg = %s', device.name, res.code, res.msg);
+          continue;
+        }
+
+        const changed: TuyaDeviceStatus[] = [];
+        for (const { code, value } of (res.result?.properties ?? []) as Array<{ code: string; value: unknown }>) {
+          const known = device.status.find(item => item.code === code);
+          if (known && value !== undefined && known.value !== value) {
+            changed.push({ code, value } as TuyaDeviceStatus);
+          }
+        }
+        if (changed.length > 0) {
+          this.log.debug('Refreshed %s from the cloud: %o', device.name, changed);
+          this.applyStatusUpdate(device.id, changed);
+        }
+      } catch (error) {
+        this.log.debug('Refresh of %s failed: %s', device.name, (error as Error)?.message);
+      }
+      await new Promise(resolve => setTimeout(resolve, 500)); // do not hit the API in a burst
+    }
+  }
+
   onLocalOnline(deviceID: string, online: boolean) {
     const device = this.getDevice(deviceID);
     if (!device) {
@@ -119,6 +172,15 @@ export default class TuyaDeviceManager extends EventEmitter {
     if (!device) {
       return;
     }
+
+    // Products without a standard instruction set report their data points by id ("27"), not by code.
+    status = status.map(item => {
+      if (device.schema.some(schema => schema.code === item.code)) {
+        return item;
+      }
+      const schema = device.schema.find(schema => schema.dp_id !== undefined && String(schema.dp_id) === String(item.code));
+      return schema ? { ...item, code: schema.code } : item;
+    });
 
     for (const item of device.status) {
       const _item = status.find(_item => _item.code === item.code);
