@@ -642,6 +642,8 @@ export default class TuyaDeviceManager extends EventEmitter {
           this.emit(Events.DEVICE_DELETE, devId);
         } else if (bizCode === 'event_notify') {
           // doorbell event
+        } else if (bizCode === 'upgradeStatus' || bizCode === 'upgradeProcess') {
+          // firmware update progress, nothing to do
         } else if (bizCode === 'p2pSignal') {
           // p2p signal
         } else {
