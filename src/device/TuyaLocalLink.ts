@@ -1,6 +1,7 @@
 import EventEmitter from 'events';
 import TuyaLocalConnection, { TuyaLocalClientFactory, TuyaLocalDps } from '../core/TuyaLocal';
 import Logger from '../util/Logger';
+import { scanLan } from '../util/network';
 import TuyaDevice, { TuyaDeviceSchema, TuyaDeviceSchemaType, TuyaDeviceStatus } from './TuyaDevice';
 import { decodeLocalValue, encodeLocalValue } from './TuyaLocalValues';
 
@@ -23,6 +24,7 @@ export interface TuyaLocalRegistration {
 export default class TuyaLocalLink extends EventEmitter {
 
   private entries = new Map<string, { device: TuyaDevice; connection: TuyaLocalConnection; persistent: boolean }>();
+  private lanCache?: { at: number; found: Promise<string[]> };
 
   constructor(
     private readonly log: Logger,
@@ -40,6 +42,7 @@ export default class TuyaLocalLink extends EventEmitter {
       ip: registration.ip,
       ipFixed: registration.ipFixed,
       version: registration.version,
+      candidates: this.factory ? undefined : () => this.lanCandidates(device.id),
     }, this.log, this.factory);
 
     connection.on('status', dps => this.onDps(device, dps));
@@ -50,6 +53,16 @@ export default class TuyaLocalLink extends EventEmitter {
 
     this.entries.set(device.id, { device, connection, persistent: registration.persistent !== false });
     return connection;
+  }
+
+  // Devices on the LAN that listen on the Tuya port and are not already taken by another registered device.
+  private async lanCandidates(deviceID: string) {
+    if (!this.lanCache || Date.now() - this.lanCache.at > 60_000) {
+      this.lanCache = { at: Date.now(), found: scanLan(6668) };
+    }
+    const taken = new Set<string>();
+    this.entries.forEach(({ connection }, id) => id !== deviceID && connection.options.ip && taken.add(connection.options.ip));
+    return (await this.lanCache.found).filter(ip => !taken.has(ip));
   }
 
   unregister(deviceID: string) {

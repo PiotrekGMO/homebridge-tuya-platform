@@ -15,6 +15,7 @@ class FakeClient extends EventEmitter implements TuyaLocalClient {
   static instances: FakeClient[] = [];
   static acceptVersion = '3.3';
   static deadIp?: string; // connecting to this address fails (the device got another one)
+  static onlyIp?: string; // only this address reaches the device
   sets: Record<string, unknown>[] = [];
   device = { ip: '192.168.1.50' };
 
@@ -24,6 +25,9 @@ class FakeClient extends EventEmitter implements TuyaLocalClient {
   }
 
   async connect() {
+    if (FakeClient.onlyIp && this.options.ip !== FakeClient.onlyIp) {
+      throw new Error('ETIMEDOUT');
+    }
     if (FakeClient.deadIp && this.options.ip === FakeClient.deadIp) {
       throw new Error('EHOSTUNREACH');
     }
@@ -76,6 +80,7 @@ describe('TuyaLocalConnection', () => {
     FakeClient.instances = [];
     FakeClient.acceptVersion = '3.3';
     FakeClient.deadIp = undefined;
+    FakeClient.onlyIp = undefined;
   });
   afterEach(() => { jest.useRealTimers(); });
 
@@ -154,6 +159,23 @@ describe('TuyaLocalConnection', () => {
 
     expect(connection.connected).toBe(true);
     expect(FakeClient.instances.at(-1)!['options'].ip).toBeUndefined();
+    connection.stop();
+  });
+
+  test('finds the device among the hosts of the network when the UDP lookup finds nothing', async () => {
+    FakeClient.onlyIp = '192.168.1.114';
+    const candidates = jest.fn(async () => ['192.168.1.5', '192.168.1.114']);
+    const connection = new TuyaLocalConnection({ id: 'dev1', key: 'k', version: '3.3', candidates }, log, factory);
+    const ip = jest.fn();
+    connection.on('ip', ip);
+    connection.start();
+    for (let i = 0; i < 4 && !connection.connected; i++) {
+      await flush();
+      jest.advanceTimersByTime(5000);
+      await flush();
+    }
+    expect(connection.connected).toBe(true);
+    expect(FakeClient.instances.map(client => client['options'].ip)).toEqual([undefined, '192.168.1.5', '192.168.1.114']);
     connection.stop();
   });
 

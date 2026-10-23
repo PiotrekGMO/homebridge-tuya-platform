@@ -12,6 +12,9 @@ export interface TuyaLocalConnectionOptions {
   // (DHCP gave the device another one) is forgotten and looked up again.
   ipFixed?: boolean;
   version?: string; // probed (3.3, 3.4, 3.5, 3.1) when missing
+  // Addresses on the LAN that listen on the Tuya port. Tried one by one when the UDP lookup finds
+  // nothing (broadcasts do not always reach the plugin); the device key tells the right one.
+  candidates?: () => Promise<string[]>;
 }
 
 // The part of tuyapi that is used here, so tests can provide a fake.
@@ -57,6 +60,8 @@ export default class TuyaLocalConnection extends EventEmitter {
   private stopped = true;
   private everConnected = false;
   private failures = 0;
+  private scanIndex = 0;
+  private scanned = false; // the current address came from the candidates, not from the UDP lookup
   private retryDelay = MIN_DELAY;
   private timer?: NodeJS.Timeout;
 
@@ -148,6 +153,13 @@ export default class TuyaLocalConnection extends EventEmitter {
       return;
     }
 
+    if (!this.options.ip && this.options.candidates && this.failures >= 1) {
+      await this.pickCandidate();
+      if (this.stopped) {
+        return;
+      }
+    }
+
     const client = this.factory({
       id: this.options.id,
       key: this.options.key,
@@ -170,6 +182,7 @@ export default class TuyaLocalConnection extends EventEmitter {
       }
       this.connected = true;
       this.everConnected = true;
+      this.scanned = false;
       this.failures = 0;
       this.retryDelay = MIN_DELAY;
       if (!this.versionKnown) {
@@ -184,12 +197,42 @@ export default class TuyaLocalConnection extends EventEmitter {
     } catch (error) {
       this.log.debug('Local connect failed (%s, v%s): %s', this.options.id, this.version, (error as Error)?.message ?? error);
       this.failures++;
-      if (this.options.ip && !this.options.ipFixed && this.failures >= STALE_IP_FAILURES) {
+      const wasScanned = this.scanned;
+      if (wasScanned) {
+        this.options.ip = undefined; // the next candidate is tried
+        this.scanned = false;
+      } else if (this.options.ip && !this.options.ipFixed && this.failures >= STALE_IP_FAILURES) {
         this.log.debug('Forgetting the remembered address of %s, it is looked up again.', this.options.id);
         this.options.ip = undefined;
         this.failures = 0;
       }
-      this.onClientLost(client);
+      this.onClientLost(client, !wasScanned);
+    }
+  }
+
+  private async pickCandidate() {
+    let list: string[] = [];
+    try {
+      list = await this.options.candidates!();
+    } catch (error) {
+      this.log.debug('Network scan failed: %s', (error as Error)?.message ?? error);
+    }
+    if (list.length === 0) {
+      return;
+    }
+    this.options.ip = list[this.scanIndex % list.length];
+    this.scanned = true;
+    this.log.debug('Trying %s for %s.', this.options.ip, this.options.id);
+    this.scanIndex++;
+    if (this.scanIndex % list.length === 0) {
+      this.nextVersion(); // every candidate was tried with this version
+    }
+  }
+
+  private nextVersion() {
+    if (!this.versionKnown) {
+      this.probeIndex = (this.probeIndex + 1) % PROBE_VERSIONS.length;
+      this.version = PROBE_VERSIONS[this.probeIndex];
     }
   }
 
@@ -199,7 +242,7 @@ export default class TuyaLocalConnection extends EventEmitter {
     }
   }
 
-  private onClientLost(client: TuyaLocalClient) {
+  private onClientLost(client: TuyaLocalClient, rotate = true) {
     if (this.client !== client) {
       return;
     }
@@ -207,9 +250,8 @@ export default class TuyaLocalConnection extends EventEmitter {
     this.markDisconnected();
     this.safeDisconnect(client);
 
-    if (!this.versionKnown) {
-      this.probeIndex = (this.probeIndex + 1) % PROBE_VERSIONS.length;
-      this.version = PROBE_VERSIONS[this.probeIndex];
+    if (rotate) {
+      this.nextVersion();
     }
 
     if (this.stopped) {
