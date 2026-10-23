@@ -53,7 +53,7 @@ class FakeClient extends EventEmitter implements TuyaLocalClient {
 }
 
 const factory = (options: any) => new FakeClient(options) as unknown as TuyaLocalClient;
-const flush = async () => { for (let i = 0; i < 5; i++) { await Promise.resolve(); } };
+const flush = async () => { for (let i = 0; i < 20; i++) { await Promise.resolve(); } };
 
 function makeDevice(extra: Partial<TuyaDevice> = {}) {
   return new TuyaDevice({
@@ -176,6 +176,25 @@ describe('TuyaLocalConnection', () => {
     }
     expect(connection.connected).toBe(true);
     expect(FakeClient.instances.map(client => client['options'].ip)).toEqual([undefined, '192.168.1.5', '192.168.1.114']);
+    connection.stop();
+  });
+
+  test('does not try other protocol versions while the device has not been found', async () => {
+    const versions: string[] = [];
+    const lost = (options: any) => {
+      versions.push(options.version);
+      const client = new FakeClient(options);
+      client.device = {} as any; // the lookup found nothing
+      client.connect = async () => { throw new Error('no device'); };
+      return client as unknown as TuyaLocalClient;
+    };
+    const connection = new TuyaLocalConnection({ id: 'dev1', key: 'k' }, log, lost);
+    connection.start();
+    for (let i = 0; i < 4; i++) {
+      await flush();
+      jest.advanceTimersByTime(60000);
+    }
+    expect(new Set(versions)).toEqual(new Set(['3.3']));
     connection.stop();
   });
 

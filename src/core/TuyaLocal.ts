@@ -43,6 +43,14 @@ const MIN_DELAY = 2000;
 const MAX_DELAY = 60000;
 const MAX_DELAY_NEVER_CONNECTED = 300000;
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 /**
  * One persistent LAN connection to a Tuya device (TCP 6668).
  * Pure transport: connects, reconnects with backoff, reads and writes DPs by id.
@@ -170,13 +178,14 @@ export default class TuyaLocalConnection extends EventEmitter {
 
     // tuyapi throws on unhandled 'error' events.
     client.on('error', error => this.log.debug('Local error (%s): %s', this.options.id, (error as Error)?.message ?? error));
-    client.on('disconnected', () => this.onClientLost(client));
+    // while connecting, the failure is handled where connect() rejects
+    client.on('disconnected', () => this.connected && this.onClientLost(client));
     client.on('data', data => this.onData(data));
     client.on('dp-refresh', data => this.onData(data));
 
     try {
-      await client.connect();
-      const status = await client.get({ schema: true });
+      await withTimeout(client.connect(), CONNECT_TIMEOUT);
+      const status = await withTimeout(client.get({ schema: true }), CONNECT_TIMEOUT);
       if (this.client !== client) {
         return; // stopped or replaced while connecting
       }
@@ -206,7 +215,7 @@ export default class TuyaLocalConnection extends EventEmitter {
         this.options.ip = undefined;
         this.failures = 0;
       }
-      this.onClientLost(client, !wasScanned);
+      this.onClientLost(client, !!client.device?.ip && !wasScanned); // without an address nothing was reached, the version proves nothing
     }
   }
 
