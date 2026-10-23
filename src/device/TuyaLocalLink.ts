@@ -46,7 +46,10 @@ export default class TuyaLocalLink extends EventEmitter {
     }, this.log, this.factory);
 
     connection.on('status', dps => this.onDps(device, dps));
-    connection.on('connected', () => this.emit('online', device.id, true));
+    connection.on('connected', () => {
+      this.log.info('[%s] Local connection established (%s, v%s)', device.name, connection.options.ip ?? '?', connection.version);
+      this.emit('online', device.id, true);
+    });
     connection.on('disconnected', () => this.emit('online', device.id, false));
     connection.on('version', version => this.emit('version', device.id, version));
     connection.on('ip', ip => this.emit('ip', device.id, ip));

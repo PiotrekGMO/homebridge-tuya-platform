@@ -206,6 +206,9 @@ export default class TuyaLocalConnection extends EventEmitter {
     } catch (error) {
       this.log.debug('Local connect failed (%s, v%s): %s', this.options.id, this.version, (error as Error)?.message ?? error);
       this.failures++;
+      if (this.failures === 3 && !this.everConnected) {
+        this.log.info('Local: %s not reachable yet (%s), still trying.', this.options.id, (error as Error)?.message ?? error);
+      }
       const wasScanned = this.scanned;
       if (wasScanned) {
         this.options.ip = undefined; // the next candidate is tried
